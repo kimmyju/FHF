@@ -310,3 +310,34 @@ The existing best LoRA checkpoint may be reused manually as an initial
 adapter via `model.lora.initial_adapter`, but that does **not** restore the
 optimizer, scheduler, or previously trained classification heads and is not
 a proper 6→15-epoch resume. Do not call that a continued training run.
+
+
+## Oracle within-family accuracy (diagnostic only)
+
+Validation now logs two distinct within-family measures:
+
+- `val/within_family_accuracy`: exact-model accuracy **conditioned on the normal
+  prediction's family being correct**. The subset changes with Family Head quality.
+- `val/oracle_within_family_accuracy`: for **every** labeled validation example,
+  reveal the ground-truth family, restrict the raw 18-class Model Head scores to
+  models in that family, then take the highest-scoring one. This directly probes
+  within-family ranking independently of family prediction.
+- `val/oracle_within_family_accuracy_by_family/<family>`: optional per-family
+  diagnostic, averaged over labeled validation examples from that family.
+
+The oracle value is also written to `history.json` and the output of
+`scripts/evaluate.py` in `evaluation.json`. It does **not** use gold labels
+for training or Kaggle submission; normal predictions and checkpoint selection
+remain unchanged. A family-only ablation cannot report oracle within-family
+accuracy because it has no 18-class Model Head.
+
+To evaluate an **existing** best checkpoint without retraining:
+
+```bash
+git pull
+python scripts/evaluate.py --config configs/ablations/longer_training.yaml
+```
+
+This writes `outputs/fhf-15ep-cosine/evaluation.json`. It does not retroactively
+add points to a completed W&B training run; newly started runs will log
+`val/oracle_within_family_accuracy` per epoch.

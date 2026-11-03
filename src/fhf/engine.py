@@ -11,7 +11,7 @@ from torch.nn import functional as F
 
 from .losses import objective, symmetric_kl
 from .hotflip import hotflip_batch
-from .metrics import report
+from .metrics import report, oracle_within_family_predictions
 from .tracking import WandbTracker
 
 
@@ -24,27 +24,44 @@ def seed_everything(seed):
         torch.cuda.manual_seed_all(seed)
 
 
-def predict(model, loader, device):
-    """Return predicted exact-model IDs or provider IDs and optional true labels."""
+def predict(model, loader, device, return_oracle=False):
+    """Predict labels, optionally evaluating exact models using the true family.
+
+    Normal inference remains a (predictions, labels) tuple, unchanged.
+    With return_oracle=True, a third list holds teacher-forced model IDs,
+    or None for a family-only model.
+    """
     model.eval()
     predictions, labels = [], []
+    oracle = [] if return_oracle and model.heads["model"] else None
     with torch.inference_mode():
         for batch in loader:
+            true_families = None
             if "labels" in batch:
+                if oracle is not None:
+                    true_families = batch["families"].to(device)
                 labels.extend((batch["labels"] if model.heads["model"] else
                                batch["families"]).tolist())
                 batch.pop("labels")
                 batch.pop("families")
+            elif return_oracle:
+                raise ValueError("Oracle within-family evaluation requires labeled data")
             out = model(**{key: value.to(device) for key, value in batch.items()})
             key = "log_probs" if model.heads["model"] else "family_log_probs"
             predictions.extend(out[key].argmax(dim=-1).cpu().tolist())
+            if oracle is not None:
+                oracle.extend(oracle_within_family_predictions(
+                    out["model_logits"], true_families, model.family_lookup
+                ).cpu().tolist())
+    if return_oracle:
+        return predictions, labels, oracle
     return predictions, labels
 
 
-def _evaluate(predictions, targets, model):
-    """Use the correct label space for 18-class versus provider-only ablations."""
+def _evaluate(predictions, targets, model, oracle_predictions=None):
+    """Use the correct label space and add oracle diagnostics for 18-class runs."""
     if model.heads["model"]:
-        return report(targets, predictions)
+        return report(targets, predictions, oracle_predictions=oracle_predictions)
     from sklearn.metrics import balanced_accuracy_score, accuracy_score, recall_score
     from .labels import FAMILY_NAMES
     return {
@@ -214,8 +231,10 @@ def fit(model, tokenizer, train_loader, valid_loader, out_dir, config, device="c
         if settings.get("log_epoch_metrics", True):
             tracker.epoch_train(epoch + 1, total / max(count, 1),
                                 train_correct / max(train_examples, 1))
-        preds, truth = predict(model, valid_loader, device)
-        metrics = _evaluate(preds, truth, model)
+        preds, truth, oracle_preds = predict(
+            model, valid_loader, device, return_oracle=True
+        )
+        metrics = _evaluate(preds, truth, model, oracle_predictions=oracle_preds)
         score = metrics.get("balanced_accuracy_observed_classes",
                             metrics.get("family_balanced_accuracy"))
         # Compute validation losses in eval mode, so train/val curves are comparable.

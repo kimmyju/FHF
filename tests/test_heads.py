@@ -19,8 +19,8 @@ class TinyEncoder(nn.Module):
 
 
 @pytest.mark.parametrize("heads,expected", [
-    (dict(family=True, model=True, projection=True), {"log_probs", "family_logits", "family_log_probs", "embeddings"}),
-    (dict(family=False, model=True, projection=False), {"log_probs"}),
+    (dict(family=True, model=True, projection=True), {"log_probs", "model_logits", "family_logits", "family_log_probs", "embeddings"}),
+    (dict(family=False, model=True, projection=False), {"log_probs", "model_logits"}),
     (dict(family=True, model=False, projection=False), {"family_logits", "family_log_probs"}),
 ])
 def test_head_ablation(heads, expected):

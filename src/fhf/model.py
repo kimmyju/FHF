@@ -88,6 +88,9 @@ class FingerprintModel(nn.Module):
             result["family_log_probs"] = F.log_softmax(result["family_logits"], dim=-1)
         if self.model_head is not None:
             logits = self.model_head(pooled)
+            # Raw 18-model logits enable teacher-forced (oracle) within-family
+            # evaluation independent of the Family Head's own prediction.
+            result["model_logits"] = logits
             if self.family_head is None:
                 result["log_probs"] = F.log_softmax(logits, dim=-1)
             else:

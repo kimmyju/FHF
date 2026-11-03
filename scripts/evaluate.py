@@ -26,8 +26,12 @@ def main():
     data = TextDataset(df, tokenizer, int(conf["model"]["max_length"]))
     loader = DataLoader(data, batch_size=int(conf["inference"]["batch_size"]),
                         collate_fn=make_collator(tokenizer))
-    prediction, target = predict(model, loader, device)
-    metrics = _evaluate(prediction, target, model)
+    prediction, target, oracle_prediction = predict(
+        model, loader, device, return_oracle=True
+    )
+    metrics = _evaluate(
+        prediction, target, model, oracle_predictions=oracle_prediction
+    )
     dest = resolve_path(conf, "eval_report")
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(json.dumps(metrics, indent=2), encoding="utf-8")

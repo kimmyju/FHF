@@ -20,12 +20,16 @@ def test_exact_model_metric_names():
         "accuracy": 0.73,
         "family_accuracy": 0.87,
         "within_family_accuracy_given_correct_family": 0.84,
+        "oracle_within_family_accuracy": 0.86,
+        "oracle_within_family_accuracy_by_family": {"OpenAI": 0.91},
         "recall_by_model": {"gpt-5.5": 0.8},
     }
     result = validation_logs(metrics, True)
     assert result["val/balanced_accuracy"] == 0.71
     assert result["val/recall/gpt-5.5"] == 0.8
     assert result["val/family_accuracy"] == 0.87
+    assert result["val/oracle_within_family_accuracy"] == 0.86
+    assert result["val/oracle_within_family_accuracy_by_family/OpenAI"] == 0.91
 
 
 def test_family_only_metrics():

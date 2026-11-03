@@ -21,6 +21,13 @@ def validation_logs(metrics, model_has_version_head: bool):
         if metrics.get("within_family_accuracy_given_correct_family") is not None:
             result["val/within_family_accuracy"] = metrics[
                 "within_family_accuracy_given_correct_family"]
+        if metrics.get("oracle_within_family_accuracy") is not None:
+            result["val/oracle_within_family_accuracy"] = metrics[
+                "oracle_within_family_accuracy"]
+            for family, value in metrics.get(
+                "oracle_within_family_accuracy_by_family", {}
+            ).items():
+                result[f"val/oracle_within_family_accuracy_by_family/{family}"] = value
         for model, value in metrics["recall_by_model"].items():
             result[f"val/recall/{model}"] = value
     else:
