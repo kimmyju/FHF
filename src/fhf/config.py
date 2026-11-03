@@ -94,6 +94,8 @@ def validate_config(conf):
         raise ValueError("Family loss requires family head")
     if active("intra_contrastive") and not heads["projection"]:
         raise ValueError("Contrastive loss requires projection head")
+    if active("hotflip") and not heads["model"]:
+        raise ValueError("HotFlip training currently requires the exact-model head")
     if not any(active(name) for name in ("exact_classification", "family")):
         raise ValueError("At least one classification loss must be active for supervised training")
     for key in ("encoder", "max_length", "dropout", "projection_dim"):
