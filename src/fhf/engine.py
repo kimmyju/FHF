@@ -119,8 +119,9 @@ def fit(model, tokenizer, train_loader, valid_loader, out_dir, config, device="c
                 if losses["rdrop"]["enabled"] and losses["rdrop"]["weight"] > 0:
                     second = model(**batch)
                     key = "log_probs" if model.heads["model"] else "family_log_probs"
-                    loss = loss + float(losses["rdrop"]["weight"]) * symmetric_kl(
-                        out[key], second[key])
+                    rdrop_value = symmetric_kl(out[key], second[key])
+                    components["rdrop"] = rdrop_value.detach()
+                    loss = loss + float(losses["rdrop"]["weight"]) * rdrop_value
                 if losses["hotflip"]["enabled"] and losses["hotflip"]["weight"] > 0:
                     changed = hotflip_batch(
                         model, dict(batch, labels=labels, families=families),
@@ -128,8 +129,10 @@ def fit(model, tokenizer, train_loader, valid_loader, out_dir, config, device="c
                     if changed is not None:
                         modified = model(input_ids=changed, attention_mask=batch["attention_mask"])
                         key = "log_probs" if model.heads["model"] else "family_log_probs"
-                        loss = loss + float(losses["hotflip"]["weight"]) * F.kl_div(
+                        hotflip_value = F.kl_div(
                             modified[key], out[key].detach().exp(), reduction="batchmean")
+                        components["hotflip"] = hotflip_value.detach()
+                        loss = loss + float(losses["hotflip"]["weight"]) * hotflip_value
             raw_loss = float(loss.detach())
             batch_accuracy = float((
                 out["log_probs"] if model.heads["model"] else out["family_log_probs"]
