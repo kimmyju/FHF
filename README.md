@@ -341,3 +341,53 @@ python scripts/evaluate.py --config configs/ablations/longer_training.yaml
 This writes `outputs/fhf-15ep-cosine/evaluation.json`. It does not retroactively
 add points to a completed W&B training run; newly started runs will log
 `val/oracle_within_family_accuracy` per epoch.
+
+## Style-only baseline: character n-gram TF-IDF + Logistic Regression
+
+This **independent CPU-friendly baseline** tests whether surface character style
+contains extra 18-model attribution information beyond ModernBERT. It does not
+modify the FHF model, heads, sampler or training code. It fits a 3–5 character
+TF-IDF vocabulary **only on the training split** and trains a multinomial
+logistic regression classifier. Character n-grams also capture topical words;
+therefore, results should not be interpreted as pure stylistic evidence.
+
+From the repository root:
+
+```bash
+git pull
+python scripts/style_baseline.py
+```
+
+By default the script reads the exact `train_split.csv` and `val.csv`
+configured in `configs/ablations/longer_training.yaml`. If **neither**
+saved split exists, it regenerates the same prompt-disjoint split from
+`data/train.csv` using that config's validation fraction and seed. It rejects
+overlapping prompt IDs and does not create a split by randomizing text rows.
+For comparison to another experiment:
+
+```bash
+python scripts/style_baseline.py --config configs/ablations/model_only.yaml
+```
+
+Outputs are isolated in `outputs/style-baseline/`:
+
+- `style_model.joblib`: fitted TF-IDF + Logistic Regression model
+- `evaluation.json`: 18-class accuracy, balanced accuracy, per-class recall,
+  family accuracy, confusion matrix and split provenance
+- `val_predictions.csv`: ID, prompt ID, ground-truth and predicted model plus
+  all 18 class probabilities, useful for later fusion experiments
+
+Optional CLI overrides include `--ngram-min`, `--ngram-max`,
+`--max-features`, `--min-df`, `--C`, and `--output-dir`.
+The default `--output-dir` is shared across configs, so specify another
+output directory if keeping several style-only experiments:
+
+```bash
+python scripts/style_baseline.py --config configs/ablations/model_only.yaml \
+  --output-dir outputs/style-model-only
+```
+
+Use **the same prompt-disjoint split** when comparing with the ModernBERT
+18-class BAcc of approximately 0.33. This is a baseline only, not an
+implemented neural Style Branch or a guaranteed performance improvement.
+Only load a `.joblib` checkpoint if you trust its source.
