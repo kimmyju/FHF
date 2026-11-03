@@ -4,7 +4,7 @@ Config-driven research implementation for the [Name That LLM](https://www.kaggle
 
 ## Encoder: what is currently configured?
 
-**Default: `microsoft/deberta-v3-base`.** It is a Hugging Face text encoder example, not an included checkpoint or a model that has already been fine-tuned. Set `model.encoder` and optionally `model.tokenizer` in YAML to use another pretrained encoder. The project uses `AutoModel`, so this path must point to an **encoder-compatible** pretrained model (not an arbitrary generative/decoder-only LLM). The shared output uses masked mean pooling.
+**Default: `answerdotai/ModernBERT-large` (about 395M parameters).** Its publicly pretrained encoder is loaded from Hugging Face, then adapted using PEFT LoRA rather than updating the full backbone. No pre-fine-tuned FHF checkpoint is bundled. Set `model.encoder` and optionally `model.tokenizer` in YAML to use another pretrained encoder. The project uses `AutoModel`, so this path must point to an **encoder-compatible** pretrained model (not an arbitrary generative/decoder-only LLM). The shared output uses masked mean pooling.
 
 ## YAML experiments
 
@@ -32,7 +32,16 @@ paths:
   test_csv: data/test.csv
   submission_parquet: submission.parquet
 model:
-  encoder: microsoft/deberta-v3-base
+  encoder: answerdotai/ModernBERT-large
+  lora:
+    enabled: true
+    r: 16
+    alpha: 32
+    dropout: 0.05
+    target_modules: [Wqkv, Wo]
+    bias: none
+    initial_adapter: null
+    bundle_base_encoder: false
   tokenizer: null
   max_length: 384
   dropout: 0.10
@@ -110,6 +119,8 @@ python scripts/train.py --config configs/base.yaml \
 
 When changing the encoder, ensure `model.tokenizer` is null or points to its compatible tokenizer. Avoid mixing tokenizers between checkpoints. Rather than overriding many paths each run, create a child YAML with `extends: base.yaml` and a different `paths` section.
 
+By default FHF trains the ModernBERT attention projections `Wqkv` and `Wo` through PEFT LoRA with rank 16 and alpha 32. The encoder's frozen original weights do not receive optimizer updates; each enabled FHF head still trains normally. Configure `model.lora.enabled: false` for a full fine-tuning ablation. Mixed precision defaults to `auto` (bf16 if supported, otherwise fp16 on CUDA), and `training.gradient_accumulation_steps: 2`. You can override `model.lora.r`, `model.lora.alpha`, `model.lora.target_modules`, `training.mixed_precision`, and `training.learning_rate` independently. LoRA default LR is 1e-4, a starting point requiring empirical validation.
+
 The default split is **prompt-disjoint**, rather than random row-level. The code uses a family-balanced minibatch sampler so same-model positives exist for contrastive learning. The best validation checkpoint is saved at `paths.checkpoint_dir`.
 
 ## External attribution pretraining (optional)
@@ -139,10 +150,10 @@ Evaluation uses exact-model recall/balanced accuracy for 18-class checkpoints an
 
 ## Kaggle notebook (Internet OFF)
 
-1. Train externally and attach the full checkpoint folder with `encoder`, `tokenizer`, `heads.pt`, and `metadata.json` to Kaggle as a **private** Dataset/Model.
-2. Attach this source repository as another Kaggle Dataset (or package it into the Notebook), retaining `src`, `scripts`, and `configs`.
+1. Train externally, then upload the FHF checkpoint folder containing `adapter/`, `tokenizer/`, `heads.pt`, and `metadata.json` to Kaggle as a **private** Dataset/Model. This contains **only LoRA weights and trainable heads**, not the frozen 395M ModernBERT backbone. When `model.lora.bundle_base_encoder: true`, a `base_encoder/` copy is also saved, increasing disk use substantially.
+2. For adapter-only checkpoints, attach the original `answerdotai/ModernBERT-large` complete model folder as another Kaggle Dataset at a local path, such as `/kaggle/input/modernbert-large`. The default `configs/kaggle.yaml` provides `paths.inference_base_encoder` for this purpose. **Internet is disabled**, so the base weights must be present locally. Attach this source repository with `src`, `scripts` and `configs` as an additional dataset.
 3. Edit `configs/kaggle.yaml` for your Kaggle mount names (or pass `--set paths.checkpoint_dir=...`).
-4. Run `notebooks/kaggle_submit.ipynb` or:
+4. Ensure `peft`, `transformers`, `torch`, `PyYAML`, `pandas`, `pyarrow`, and `safetensors` are available offline. Run `notebooks/kaggle_submit.ipynb` or:
 
 ```bash
 python scripts/kaggle_submit.py --config configs/kaggle.yaml
@@ -168,3 +179,13 @@ The hidden competition test CSV is never available for local model selection. Th
 This is inspired by the two-step optimization and gradient-guided token search of *Prompt Injection Attack to Tool Selection in LLM Agents* (ToolHijacker, NDSS 2026), adapted to benign LLM authorship attribution. These are established ingredients, not proof of research novelty. HotFlip is disabled by default; replacing discourse markers may alter the true author fingerprint. Its efficacy and stability on unseen prompts must be established empirically. No external dataset, actual model weights, hidden test labels or benchmark scores are included.
 
 Code license: MIT. External checkpoints and datasets retain their own licenses.
+
+## ModernBERT + LoRA design notes
+
+- Pretrained backbone: [answerdotai/ModernBERT-large](https://huggingface.co/answerdotai/ModernBERT-large), a bidirectional encoder, not a generative LLM.
+- LoRA implementation: [PEFT](https://huggingface.co/docs/peft/index). Adapter target modules are `Wqkv` and `Wo`, ModernBERT's attention projections. Model compatibility follows the documented [Sentence Transformers ModernBERT PEFT example](https://www.sbert.net/examples/multi_vector_encoder/training/peft/).
+- Fine-tuning: LoRA matrices and enabled family/model/projection heads are updated; the underlying encoder's pretrained weights remain frozen. This reduces optimizer memory requirements but full encoder forward and backward activations still consume GPU memory.
+- Precision: `training.mixed_precision: auto` uses bf16 if the GPU supports it, otherwise fp16. CPU uses full precision.
+- Checkpoint: adapter-only unless `model.lora.bundle_base_encoder: true`. The frozen original base must be mounted independently for offline Kaggle inference; a missing local model raises a descriptive error.
+- All ablations inherit LoRA defaults, ensuring fair comparisons. Set `model.lora.enabled: false` in a new YAML to compare full fine-tuning.
+- **Validation required:** the project has no verified competition score or completed real ModernBERT-large training run. Run a minimal dry-run and memory benchmark on your actual GPU before scaling up.

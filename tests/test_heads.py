@@ -25,7 +25,7 @@ class TinyEncoder(nn.Module):
 ])
 def test_head_ablation(heads, expected):
     with patch("fhf.model.AutoModel.from_pretrained", return_value=TinyEncoder()):
-        model = FingerprintModel("toy", heads=heads)
+        model = FingerprintModel("toy", heads=heads, lora={"enabled":False})
     x = torch.randint(1, 40, (4, 7))
     mask = torch.ones_like(x)
     out = model(x, mask)

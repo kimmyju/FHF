@@ -52,3 +52,16 @@ def test_resolve_path():
 def test_all_presets_load():
     for preset in (ROOT / "configs").rglob("*.yaml"):
         assert load_config(preset)["experiment"]
+
+def test_modernbert_lora_defaults():
+    """Check the production YAML activates correct encoder and PEFT parameters."""
+    conf = load_config(ROOT / "configs/base.yaml")
+    assert conf["model"]["encoder"] == "answerdotai/ModernBERT-large"
+    assert conf["model"]["lora"]["enabled"]
+    assert conf["model"]["lora"]["target_modules"] == ["Wqkv", "Wo"]
+    assert conf["training"]["gradient_accumulation_steps"] >= 1
+
+
+def test_invalid_lora_rank():
+    with pytest.raises(ValueError, match="LoRA r and alpha"):
+        load_config(ROOT / "configs/base.yaml", ["model.lora.r=0"])

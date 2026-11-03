@@ -16,13 +16,25 @@ paths:
   submission_parquet: submission.parquet
   external_csv: data/external.csv
   external_encoder_dir: outputs/fhf-external
+  # Needed for adapter-only checkpoints when the frozen base is not bundled.
+  # In Kaggle this must point to a preattached, offline base-model directory.
+  inference_base_encoder: null
 
 model:
-  encoder: microsoft/deberta-v3-base
+  encoder: answerdotai/ModernBERT-large
   tokenizer: null  # Defaults to model.encoder. Override after external pretraining.
   max_length: 384
   dropout: 0.10
   projection_dim: 128
+  lora:
+    enabled: true
+    r: 16
+    alpha: 32
+    dropout: 0.05
+    target_modules: [Wqkv, Wo]
+    bias: none
+    initial_adapter: null
+    bundle_base_encoder: false
   heads:
     family: true
     model: true
@@ -50,19 +62,21 @@ losses:
 
 training:
   epochs: 5
-  learning_rate: 0.00002
+  learning_rate: 0.0001
   weight_decay: 0.01
+  gradient_accumulation_steps: 2
+  mixed_precision: auto # bf16 on supported CUDA; fp16 fallback; full precision on CPU
   grad_clip: 1.0
   validation_fraction: 0.20
-  batch_families: 3
+  batch_families: 2
   models_per_family: 2
   samples_per_model: 2
   steps_per_epoch: null
-  eval_batch_size: 32
+  eval_batch_size: 16
   num_workers: 0
 
 inference:
-  batch_size: 32
+  batch_size: 16
 
 external_pretraining:
   epochs: 2

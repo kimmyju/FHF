@@ -5,6 +5,8 @@ paths:
   base_dir: .
   # Submission uses only checkpoint_dir, test_csv, and submission_parquet.
   checkpoint_dir: /kaggle/input/fhf-checkpoint
+  # Attach the *frozen original ModernBERT-large weights* separately (not LoRA adapter).
+  inference_base_encoder: /kaggle/input/modernbert-large
   test_csv: /kaggle/input/competitions/name-that-llm/test.csv
   submission_parquet: /kaggle/working/submission.parquet
 inference:

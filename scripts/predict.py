@@ -11,10 +11,11 @@ from fhf.data import TextDataset, load_csv, make_collator
 from fhf.engine import predict
 
 
-def submit(checkpoint, test_csv, output, batch_size=32, max_length=384):
+def submit(checkpoint, test_csv, output, batch_size=32, max_length=384,
+           base_encoder_override=None):
     """Disallow family-only checkpoints: they cannot produce valid 18-class submissions."""
     df = load_csv(test_csv, labeled=False)
-    model, tokenizer, _ = FingerprintModel.from_checkpoint(checkpoint)
+    model, tokenizer, _ = FingerprintModel.from_checkpoint(checkpoint, base_encoder_override=base_encoder_override)
     if not model.heads["model"]:
         raise ValueError("A family-only checkpoint cannot submit 18-class predictions")
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -39,9 +40,11 @@ def main():
     parser.add_argument("--set", action="append", default=[])
     args = parser.parse_args()
     config = load_config(args.config, args.set)
+    base_override = (resolve_path(config, "inference_base_encoder")
+                     if config["paths"].get("inference_base_encoder") else None)
     submit(resolve_path(config, "checkpoint_dir"), resolve_path(config, "test_csv"),
            resolve_path(config, "submission_parquet"), config["inference"]["batch_size"],
-           config["model"]["max_length"])
+           config["model"]["max_length"], base_encoder_override=base_override)
 
 
 if __name__ == "__main__":

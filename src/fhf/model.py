@@ -1,4 +1,11 @@
-"""Configurable shared Transformer encoder with independently switchable provider, model and projection heads."""
+"""ModernBERT-compatible, LoRA-adapted shared encoder with independently switchable heads.
+
+LoRA fine-tunes attention Wqkv/Wo matrices while FHF classification/projection
+heads remain fully trainable. Adapter-only checkpoints need a separately mounted
+frozen base encoder for offline Kaggle inference.
+"""
+from __future__ import annotations
+
 import json
 from pathlib import Path
 
@@ -10,24 +17,55 @@ from transformers import AutoModel, AutoTokenizer
 from .labels import MODEL_NAMES, FAMILY_NAMES, MODEL_FAMILY_IDS
 
 
-class FingerprintModel(nn.Module):
-    """Support family-only, flat model-only and hierarchical attribution.
+DEFAULT_LORA = {
+    "enabled": True,
+    "r": 16,
+    "alpha": 32,
+    "dropout": 0.05,
+    "target_modules": ["Wqkv", "Wo"],
+    "bias": "none",
+    "initial_adapter": None,
+    "bundle_base_encoder": False,
+}
 
-    When both classifier heads are enabled:
-      log P(model|x) = log P(provider|x) + log P(model|provider,x)
-    When only the model head is enabled, predict with a flat 18-way softmax.
-    Family-only is diagnostic and cannot make an 18-class Kaggle submission.
-    """
+
+def _lora_config(settings):
+    """Create an explicit PEFT feature-extraction adapter for a bidirectional encoder."""
+    from peft import LoraConfig, TaskType
+    return LoraConfig(
+        task_type=TaskType.FEATURE_EXTRACTION,
+        r=int(settings["r"]),
+        lora_alpha=int(settings["alpha"]),
+        lora_dropout=float(settings["dropout"]),
+        target_modules=list(settings["target_modules"]),
+        bias=settings.get("bias", "none"),
+        inference_mode=False,
+    )
+
+
+def apply_lora(base, settings):
+    """Wrap a pretrained encoder, optionally initializing from a pretrained adapter."""
+    from peft import PeftModel, get_peft_model
+    prior = settings.get("initial_adapter")
+    if prior:
+        return PeftModel.from_pretrained(base, prior, is_trainable=True)
+    return get_peft_model(base, _lora_config(settings))
+
+
+class FingerprintModel(nn.Module):
+    """Hierarchical (provider/version), flat exact-model, or provider-only classifier."""
 
     def __init__(self, backbone, dropout=0.1, projection_dim=128,
-                 heads=None, local_files_only=False):
+                 heads=None, lora=None, local_files_only=False, attach_adapter=True):
         super().__init__()
         self.heads = dict(heads or {"family": True, "model": True, "projection": True})
         if not (self.heads.get("family") or self.heads.get("model")):
             raise ValueError("At least one classification head must be enabled")
-        self.backbone_name = backbone
-        self.encoder = AutoModel.from_pretrained(backbone, local_files_only=local_files_only)
-        hidden = self.encoder.config.hidden_size
+        self.lora = dict(DEFAULT_LORA if lora is None else {**DEFAULT_LORA, **lora})
+        self.backbone_name = str(backbone)
+        base = AutoModel.from_pretrained(backbone, local_files_only=local_files_only)
+        hidden = base.config.hidden_size
+        self.encoder = apply_lora(base, self.lora) if self.lora["enabled"] and attach_adapter else base
         self.dropout = nn.Dropout(dropout)
         self.projection = (nn.Sequential(nn.Linear(hidden, hidden), nn.GELU(),
                                         nn.Linear(hidden, projection_dim))
@@ -37,6 +75,7 @@ class FingerprintModel(nn.Module):
         self.register_buffer("family_lookup", torch.tensor(MODEL_FAMILY_IDS, dtype=torch.long))
 
     def forward(self, input_ids, attention_mask, **kwargs):
+        """Encode original text and compute a normalized exact-model distribution."""
         outputs = self.encoder(input_ids=input_ids, attention_mask=attention_mask, **kwargs)
         weights = attention_mask.unsqueeze(-1)
         pooled = (outputs.last_hidden_state * weights).sum(1) / weights.sum(1).clamp_min(1)
@@ -54,16 +93,26 @@ class FingerprintModel(nn.Module):
             else:
                 local = torch.empty_like(logits)
                 for family_idx in range(len(FAMILY_NAMES)):
-                    ids = torch.where(self.family_lookup == family_idx)[0]
-                    local[:, ids] = F.log_softmax(logits[:, ids], dim=-1)
+                    indices = torch.where(self.family_lookup == family_idx)[0]
+                    local[:, indices] = F.log_softmax(logits[:, indices], dim=-1)
                 result["log_probs"] = local + result["family_log_probs"][:, self.family_lookup]
         return result
 
+    def trainable_parameters(self):
+        """Expose trainable adapter plus classifier/head parameter counts."""
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
     def save_checkpoint(self, path, tokenizer, extra=None):
-        """Save model, optional heads, model configuration and tokenizer for offline inference."""
+        """Save LoRA adapter, custom heads, tokenizer, and optional frozen base weights."""
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)
-        self.encoder.save_pretrained(path / "encoder", safe_serialization=True)
+        if self.lora["enabled"]:
+            self.encoder.save_pretrained(path / "adapter", safe_serialization=True)
+            if self.lora.get("bundle_base_encoder", False):
+                self.encoder.get_base_model().save_pretrained(
+                    path / "base_encoder", safe_serialization=True)
+        else:
+            self.encoder.save_pretrained(path / "encoder", safe_serialization=True)
         tokenizer.save_pretrained(path / "tokenizer")
         torch.save({
             "heads": self.heads,
@@ -74,24 +123,51 @@ class FingerprintModel(nn.Module):
             "projection_dim": self.projection[-1].out_features if self.projection is not None else None,
         }, path / "heads.pt")
         (path / "metadata.json").write_text(json.dumps({
-            "models": MODEL_NAMES, "families": FAMILY_NAMES,
+            "format_version": 2, "models": MODEL_NAMES, "families": FAMILY_NAMES,
+            "base_encoder": self.backbone_name, "lora": self.lora,
             "heads": self.heads, "extra": extra or {},
         }, indent=2), encoding="utf-8")
 
     @classmethod
-    def from_checkpoint(cls, path, map_location="cpu"):
-        """Restore the exact head architecture, including all disabled modules."""
+    def from_checkpoint(cls, path, map_location="cpu", base_encoder_override=None):
+        """Restore without network access, loading LoRA on the exact matching frozen base.
+
+        Adapter-only checkpoints require a predownloaded base encoder at
+        base_encoder_override or a cached base encoder. For fully offline Kaggle
+        runs set paths.inference_base_encoder to an attached model location.
+        """
         path = Path(path)
         meta = json.loads((path / "metadata.json").read_text(encoding="utf-8"))
         if meta["models"] != MODEL_NAMES or meta["families"] != FAMILY_NAMES:
-            raise ValueError("Checkpoint label vocabulary differs from current competition labels")
+            raise ValueError("Checkpoint labels do not match the competition's 18 classes")
         state = torch.load(path / "heads.pt", map_location=map_location, weights_only=True)
-        model = cls(str(path / "encoder"), dropout=state["dropout"],
-                    projection_dim=state["projection_dim"] or 128,
-                    heads=state["heads"], local_files_only=True)
+        lora = meta.get("lora", {"enabled": False})
+        if lora.get("enabled", False):
+            base = base_encoder_override or (
+                str(path / "base_encoder") if (path / "base_encoder").is_dir()
+                else meta["base_encoder"]
+            )
+        else:
+            base = str(path / "encoder")
+        try:
+            model = cls(base, dropout=state["dropout"],
+                        projection_dim=state["projection_dim"] or 128,
+                        heads=state["heads"], lora=lora,
+                        local_files_only=True, attach_adapter=False)
+        except (OSError, FileNotFoundError) as error:
+            raise FileNotFoundError(
+                "Cannot load frozen base encoder offline. Set "
+                "paths.inference_base_encoder to the attached ModernBERT-large "
+                "directory (or enable model.lora.bundle_base_encoder during training)."
+            ) from error
+        if lora.get("enabled", False):
+            from peft import PeftModel
+            model.encoder = PeftModel.from_pretrained(
+                model.encoder, str(path / "adapter"), is_trainable=False)
         for name in ("projection", "family_head", "model_head"):
             module = getattr(model, name)
             if module is not None:
                 module.load_state_dict(state[name])
-        tokenizer = AutoTokenizer.from_pretrained(str(path / "tokenizer"), local_files_only=True)
+        tokenizer = AutoTokenizer.from_pretrained(
+            str(path / "tokenizer"), local_files_only=True)
         return model, tokenizer, meta

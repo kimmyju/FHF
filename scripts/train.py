@@ -39,7 +39,7 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(model_cfg["tokenizer"] or model_cfg["encoder"])
     model = FingerprintModel(model_cfg["encoder"], dropout=float(model_cfg["dropout"]),
                              projection_dim=int(model_cfg["projection_dim"]),
-                             heads=model_cfg["heads"])
+                             heads=model_cfg["heads"], lora=model_cfg.get("lora", {"enabled": False}))
     train_data = TextDataset(train, tokenizer, int(model_cfg["max_length"]))
     valid_data = TextDataset(val, tokenizer, int(model_cfg["max_length"]))
     collator = make_collator(tokenizer)

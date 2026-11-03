@@ -80,7 +80,7 @@ def validate_config(conf):
     if set(heads) != set(HEADS) or any(type(heads[h]) is not bool for h in HEADS):
         raise ValueError("Set model.heads.family, model, projection explicitly to true/false")
     if not (heads["family"] or heads["model"]):
-        raise ValueError("Enable at least one classifier head (family or model)")
+        raise ValueError("At least one classifier head (family or model) must be enabled")
     for loss in LOSSES:
         spec = conf["losses"].get(loss)
         if not isinstance(spec, dict) or type(spec.get("enabled")) is not bool:
@@ -96,6 +96,20 @@ def validate_config(conf):
         raise ValueError("Contrastive loss requires projection head")
     if active("hotflip") and not heads["model"]:
         raise ValueError("HotFlip training currently requires the exact-model head")
+    lora = conf["model"].get("lora", {"enabled": False})
+    if type(lora.get("enabled", False)) is not bool:
+        raise ValueError("model.lora.enabled must be true/false")
+    if lora["enabled"]:
+        if int(lora["r"]) <= 0 or int(lora["alpha"]) <= 0:
+            raise ValueError("LoRA r and alpha must be positive")
+        if not 0 <= float(lora["dropout"]) < 1:
+            raise ValueError("LoRA dropout must be in [0,1)")
+        if not isinstance(lora.get("target_modules"), list) or not lora["target_modules"]:
+            raise ValueError("LoRA target_modules must be a nonempty list")
+    if int(conf["training"].get("gradient_accumulation_steps", 1)) < 1:
+        raise ValueError("gradient_accumulation_steps must be positive")
+    if conf["training"].get("mixed_precision", "none") not in ("auto", "bf16", "fp16", "none"):
+        raise ValueError("mixed_precision must be auto, bf16, fp16, or none")
     if not any(active(name) for name in ("exact_classification", "family")):
         raise ValueError("At least one classification loss must be active for supervised training")
     for key in ("encoder", "max_length", "dropout", "projection_dim"):

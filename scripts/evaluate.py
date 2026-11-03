@@ -17,7 +17,10 @@ def main():
     args = parser.parse_args()
     conf = load_config(args.config, args.set)
     df = load_csv(resolve_path(conf, "eval_csv"))
-    model, tokenizer, _ = FingerprintModel.from_checkpoint(resolve_path(conf, "checkpoint_dir"))
+    base_override = (resolve_path(conf, "inference_base_encoder")
+                     if conf["paths"].get("inference_base_encoder") else None)
+    model, tokenizer, _ = FingerprintModel.from_checkpoint(
+        resolve_path(conf, "checkpoint_dir"), base_encoder_override=base_override)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model.to(device)
     data = TextDataset(df, tokenizer, int(conf["model"]["max_length"]))
