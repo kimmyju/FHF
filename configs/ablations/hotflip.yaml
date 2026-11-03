@@ -7,6 +7,8 @@ paths:
   train_split_csv: outputs/hotflip/train_split.csv
   history_json: outputs/hotflip/history.json
   config_snapshot: outputs/hotflip/config_resolved.yaml
+  eval_csv: outputs/hotflip/val.csv
+  eval_report: outputs/hotflip/evaluation.json
 losses:
   hotflip:
     enabled: true
