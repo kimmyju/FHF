@@ -34,6 +34,19 @@ def test_head_ablation(heads, expected):
     assert torch.allclose(out[key].exp().sum(-1), torch.ones(4), atol=1e-5)
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="bf16 autocast requires CUDA")
+def test_hierarchical_log_probs_under_bf16_autocast():
+    with patch("fhf.model.AutoModel.from_pretrained", return_value=TinyEncoder()):
+        model = FingerprintModel(
+            "toy", heads=dict(family=True, model=True, projection=False), lora={"enabled": False}
+        ).cuda()
+    x = torch.randint(1, 40, (4, 7), device="cuda")
+    mask = torch.ones_like(x)
+    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        out = model(x, mask)
+    assert torch.isfinite(out["log_probs"]).all()
+
+
 def test_zero_classifier_head_rejected():
     with pytest.raises(ValueError, match="At least one classification"):
         FingerprintModel("unused", heads=dict(family=False, model=False, projection=True))

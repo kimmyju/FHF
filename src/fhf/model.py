@@ -94,7 +94,9 @@ class FingerprintModel(nn.Module):
                 local = torch.empty_like(logits)
                 for family_idx in range(len(FAMILY_NAMES)):
                     indices = torch.where(self.family_lookup == family_idx)[0]
-                    local[:, indices] = F.log_softmax(logits[:, indices], dim=-1)
+                    # autocast runs log_softmax in float32; index assignment does not cast.
+                    family_log_probs = F.log_softmax(logits[:, indices], dim=-1)
+                    local[:, indices] = family_log_probs.to(dtype=local.dtype)
                 result["log_probs"] = local + result["family_log_probs"][:, self.family_lookup]
         return result
 
