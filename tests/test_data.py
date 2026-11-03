@@ -27,3 +27,21 @@ def test_unknown_label_rejected(tmp_path):
     pd.DataFrame({'id':['x'],'text':['hello'],'model':['gpt-4']}).to_csv(path,index=False)
     with pytest.raises(ValueError,match='Unknown'):
         load_csv(path)
+
+
+def test_sampler_changes_between_epochs_but_is_reproducible():
+    """Avoid repeating the exact same contrastive batches every epoch."""
+    from fhf.data import FamilyBatchSampler
+    labels = list(range(18)) * 6
+    sampler = FamilyBatchSampler(labels, batch_families=2, models_per_family=2,
+                                 samples_per_model=2, steps_per_epoch=20, seed=42)
+    sampler.set_epoch(0)
+    first = list(sampler)
+    sampler.set_epoch(1)
+    second = list(sampler)
+    sampler.set_epoch(0)
+    assert first == list(sampler)
+    assert first != second
+    assert all(len(batch) == 8 for batch in first)
+    with pytest.raises(ValueError, match="non-negative"):
+        sampler.set_epoch(-1)

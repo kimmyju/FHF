@@ -1,6 +1,7 @@
 """LoRA-efficient FHF training with mixed precision, gradient accumulation and offline prediction."""
 from __future__ import annotations
 
+import math
 import random
 from contextlib import nullcontext
 
@@ -77,6 +78,48 @@ def _precision(device, setting):
     raise ValueError(f"Unsupported mixed precision mode: {setting}")
 
 
+def make_scheduler(optimizer, settings, updates_per_epoch):
+    """Optional optimizer-step cosine schedule with linear warmup."""
+    schedule = settings.get("scheduler", {})
+    name = schedule.get("name", "none")
+    if name == "none":
+        return None
+    if name != "cosine":
+        raise ValueError(f"Unknown scheduler: {name}")
+    total_updates = int(settings["epochs"]) * int(updates_per_epoch)
+    if total_updates < 1:
+        raise ValueError("Scheduler needs at least one optimizer step")
+    warmup = min(total_updates - 1, int(total_updates * float(schedule.get("warmup_ratio", 0.0))))
+    floor = float(schedule.get("min_lr_ratio", 0.0))
+
+    def multiplier(step):
+        if step < warmup:
+            return float(step + 1) / max(1, warmup)
+        progress = min(1.0, max(0.0, (step - warmup) / max(1, total_updates - warmup)))
+        return floor + 0.5 * (1.0 - floor) * (1.0 + math.cos(math.pi * progress))
+
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=multiplier)
+
+
+class ScoreEarlyStopper:
+    """Checkpoint on significant metric improvements, stop after patience epochs."""
+
+    def __init__(self, settings):
+        self.enabled = bool(settings.get("enabled", False))
+        self.patience = int(settings.get("patience", 4))
+        self.min_delta = float(settings.get("min_delta", 0.0))
+        self.best = -float("inf")
+        self.bad_epochs = 0
+
+    def observe(self, score):
+        if score > self.best + self.min_delta:
+            self.best = score
+            self.bad_epochs = 0
+            return True, False
+        self.bad_epochs += 1
+        return False, self.enabled and self.bad_epochs >= self.patience
+
+
 def fit(model, tokenizer, train_loader, valid_loader, out_dir, config, device="cpu", tracker=None):
     """Train adapter and heads with weighted losses; retain best prompt-disjoint checkpoint."""
     settings, losses = config["training"], config["losses"]
@@ -99,12 +142,19 @@ def fit(model, tokenizer, train_loader, valid_loader, out_dir, config, device="c
     trainable_params = sum(p.numel() for p in trainable)
     print(f"Trainable parameters: {trainable_params:,}/{total_params:,}"
           f" ({100 * trainable_params / max(total_params,1):.2f}%)")
-    best, history = -float("inf"), []
+    stopper = ScoreEarlyStopper(settings.get("early_stopping", {}))
+    updates_per_epoch = math.ceil(len(train_loader) / accumulation)
+    scheduler = make_scheduler(optimizer, settings, updates_per_epoch)
+    history = []
     optimizer_steps = 0
     for epoch in range(int(settings["epochs"])):
+        # Critical fix: do not draw exactly the same balanced batches every epoch.
+        if hasattr(train_loader.batch_sampler, "set_epoch"):
+            train_loader.batch_sampler.set_epoch(epoch)
         model.train()
         optimizer.zero_grad(set_to_none=True)
         total, count = 0.0, 0
+        train_correct, train_examples = 0.0, 0
         for step, batch in enumerate(train_loader):
             batch = {key: val.to(device) for key, val in batch.items()}
             labels, families = batch.pop("labels"), batch.pop("families")
@@ -142,20 +192,28 @@ def fit(model, tokenizer, train_loader, valid_loader, out_dir, config, device="c
             if (step + 1) % accumulation == 0 or step + 1 == len(train_loader):
                 scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(trainable, float(settings["grad_clip"]))
+                lr_used = optimizer.param_groups[0]["lr"]
                 scaler.step(optimizer)
                 scaler.update()
+                if scheduler is not None:
+                    scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
                 optimizer_steps += 1
                 if optimizer_steps % int(config.get("wandb", {}).get("log_every_n_steps", 1)) == 0:
                     tracker.train_step(optimizer_steps, {
                         "train/loss": raw_loss,
                         "train/accuracy": batch_accuracy,
-                        "train/learning_rate": optimizer.param_groups[0]["lr"],
+                        "train/learning_rate": lr_used,
                         **{f"train/loss_{key}": float(value)
                            for key, value in components.items()},
                     })
             total += raw_loss
             count += 1
+            train_correct += batch_accuracy * len(labels)
+            train_examples += len(labels)
+        if settings.get("log_epoch_metrics", True):
+            tracker.epoch_train(epoch + 1, total / max(count, 1),
+                                train_correct / max(train_examples, 1))
         preds, truth = predict(model, valid_loader, device)
         metrics = _evaluate(preds, truth, model)
         score = metrics.get("balanced_accuracy_observed_classes",
@@ -192,13 +250,12 @@ def fit(model, tokenizer, train_loader, valid_loader, out_dir, config, device="c
         })
         print(f"Epoch {epoch+1}: loss={total/max(count,1):.4f}; "
               f"val balanced accuracy={score:.4f}")
-        improved = score > best
+        improved, should_stop = stopper.observe(score)
         if improved:
-            best = score
             tracker.best(epoch + 1,
                          "balanced_accuracy" if model.heads["model"] else "family_balanced_accuracy",
                          score)
-        tracker.best_score(epoch + 1, best, model.heads["model"])
+        tracker.best_score(epoch + 1, stopper.best, model.heads["model"])
         if improved:
             model.save_checkpoint(out_dir, tokenizer, extra={
                 "best_epoch": epoch + 1,
@@ -206,4 +263,8 @@ def fit(model, tokenizer, train_loader, valid_loader, out_dir, config, device="c
                 "experiment": config["experiment"],
                 "trainable_parameters": trainable_params,
             })
+        if should_stop:
+            print(f"Early stopping at epoch {epoch + 1}: "
+                  f"no significant validation BAcc gain for {stopper.patience} epochs")
+            break
     return history

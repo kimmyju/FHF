@@ -62,6 +62,16 @@ losses:
 
 training:
   epochs: 5
+  # Choose 15 for a new longer run. Keep original baseline defaults unchanged.
+  early_stopping:
+    enabled: false
+    patience: 4
+    min_delta: 0.001
+  scheduler:
+    name: none  # none | cosine
+    warmup_ratio: 0.05
+    min_lr_ratio: 0.05
+  log_epoch_metrics: true
   learning_rate: 0.0001
   weight_decay: 0.01
   gradient_accumulation_steps: 2

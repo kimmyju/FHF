@@ -1,0 +1,29 @@
+# Recommended longer training experiment after initial 6-epoch BAcc 0.26.
+# This is a NEW run, not an automatic continuation of the existing checkpoint.
+extends: ../base.yaml
+experiment: fhf-modernbert-lora-15ep-cosine
+paths:
+  checkpoint_dir: outputs/fhf-15ep-cosine/checkpoint
+  validation_csv: outputs/fhf-15ep-cosine/val.csv
+  train_split_csv: outputs/fhf-15ep-cosine/train_split.csv
+  history_json: outputs/fhf-15ep-cosine/history.json
+  config_snapshot: outputs/fhf-15ep-cosine/config_resolved.yaml
+  eval_csv: outputs/fhf-15ep-cosine/val.csv
+  eval_report: outputs/fhf-15ep-cosine/evaluation.json
+
+training:
+  epochs: 15
+  learning_rate: 0.0001
+  early_stopping:
+    enabled: true
+    patience: 4
+    min_delta: 0.001
+  scheduler:
+    name: cosine
+    warmup_ratio: 0.05
+    min_lr_ratio: 0.05
+  log_epoch_metrics: true
+
+wandb:
+  run_name: fhf-15ep-cosine
+  tags: [modernbert, lora, 15ep, cosine, early-stopping]

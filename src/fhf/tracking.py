@@ -69,11 +69,21 @@ class WandbTracker:
         self.run.define_metric("train/*", step_metric="train/optimizer_step")
         self.run.define_metric("epoch")
         self.run.define_metric("val/*", step_metric="epoch")
+        self.run.define_metric("epoch_train/*", step_metric="epoch")
 
     def train_step(self, optimizer_step, metrics):
         """Log optimizer-step loss components and batch accuracy as line charts."""
         if self.enabled:
             self.run.log({"train/optimizer_step": optimizer_step, **metrics})
+
+    def epoch_train(self, epoch, loss, accuracy):
+        """Log epoch aggregates on the same x-axis as validation metrics."""
+        if self.enabled:
+            self.run.log({
+                "epoch": epoch,
+                "epoch_train/loss": float(loss),
+                "epoch_train/accuracy": float(accuracy),
+            })
 
     def validation(self, epoch, metrics, predictions, targets, model_has_version_head):
         """Log validation scores, model recalls and optional 18x18 confusion matrix."""

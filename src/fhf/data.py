@@ -71,6 +71,7 @@ class FamilyBatchSampler(Sampler):
     def __init__(self, labels, batch_families=3, models_per_family=2, samples_per_model=2,
                  steps_per_epoch=None, seed=42):
         self.bf, self.mpf, self.spm, self.seed = batch_families, models_per_family, samples_per_model, seed
+        self.epoch = 0
         self.by_family = {}
         for idx, model in enumerate(labels):
             family = MODEL_FAMILY_IDS[model]
@@ -82,8 +83,16 @@ class FamilyBatchSampler(Sampler):
     def __len__(self):
         return self.steps
 
+    def set_epoch(self, epoch):
+        """Different reproducible random batches for each epoch."""
+        if int(epoch) < 0:
+            raise ValueError("Sampler epoch must be non-negative")
+        self.epoch = int(epoch)
+
     def __iter__(self):
-        rng = np.random.default_rng(self.seed)
+        # SeedSequence combines the run seed and epoch number. Repeated iter()
+        # calls in one epoch remain deterministic; consecutive epochs differ.
+        rng = np.random.default_rng(np.random.SeedSequence([self.seed, self.epoch]))
         families = list(self.by_family)
         for _ in range(self.steps):
             chosen_families = rng.choice(families, self.bf, replace=False)

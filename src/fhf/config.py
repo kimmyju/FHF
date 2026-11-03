@@ -121,6 +121,20 @@ def validate_config(conf):
         raise ValueError("Dropout must be in [0,1)")
     if int(conf["training"]["epochs"]) < 1:
         raise ValueError("training.epochs must be >= 1")
+    early = conf["training"].get("early_stopping", {})
+    if type(early.get("enabled", False)) is not bool:
+        raise ValueError("training.early_stopping.enabled must be true/false")
+    if int(early.get("patience", 4)) < 1 or float(early.get("min_delta", 0.0)) < 0:
+        raise ValueError("Early stopping patience must be >=1 and min_delta >=0")
+    scheduler = conf["training"].get("scheduler", {})
+    if scheduler.get("name", "none") not in ("none", "cosine"):
+        raise ValueError("training.scheduler.name must be none or cosine")
+    if not 0 <= float(scheduler.get("warmup_ratio", 0.0)) < 1:
+        raise ValueError("Scheduler warmup_ratio must be in [0,1)")
+    if not 0 <= float(scheduler.get("min_lr_ratio", 0.0)) <= 1:
+        raise ValueError("Scheduler min_lr_ratio must be in [0,1]")
+    if type(conf["training"].get("log_epoch_metrics", True)) is not bool:
+        raise ValueError("training.log_epoch_metrics must be true/false")
 
 
 def resolve_path(conf, key):

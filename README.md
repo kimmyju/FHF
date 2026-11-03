@@ -264,3 +264,49 @@ python scripts/train.py --config configs/base.yaml --set wandb.enabled=false
 ```
 
 Local `history.json` reports remain available regardless of W&B configuration.
+
+## Training beyond 6 epochs: new batches, optional scheduler, early stopping
+
+Previously `FamilyBatchSampler.__iter__` initialized NumPy RNG with the same seed
+every epoch, repeating the same balanced minibatch indices and order. The sampler
+now accepts `set_epoch(epoch)`, and the training loop calls it at each epoch
+boundary. The same seed and epoch still reproduce the same balanced batch
+sequence. Note that this is a *with-replacement balanced sampler*, so it does
+**not** guarantee every training example is seen once per epoch.
+
+To try a longer run independently of the existing 6-epoch experiment:
+
+```bash
+git pull
+python scripts/train.py --config configs/ablations/longer_training.yaml
+```
+
+The new preset runs up to 15 epochs with `training.scheduler.name: cosine`,
+`training.scheduler.warmup_ratio: 0.05`, and early stopping
+(`patience: 4`, `min_delta: 0.001`). It has a separate output directory,
+`outputs/fhf-15ep-cosine/`, to avoid overwriting the earlier model. A
+checkpoint is saved on significant validation BAcc improvement, and training
+stops after four consecutive non-improving epochs.
+
+You can also override each option on the command line:
+
+```bash
+python scripts/train.py --config configs/base.yaml \
+  --set training.epochs=15 \
+  --set training.scheduler.name=cosine \
+  --set training.early_stopping.enabled=true
+```
+
+For a fair assessment, compare **validation BAcc rather than combined training
+loss alone**. The latter includes hierarchical and contrastive objectives;
+the validation loss reported under `val/loss` is exact-classification NLL
+(for 18-class runs) and is not directly the same weighted objective. W&B now
+also logs `epoch_train/loss` and `epoch_train/accuracy` by epoch as additional
+summary plots.
+
+**No automatic resume:** FHF currently loads its base model at the beginning
+of each run. Switching the YAML to 15 epochs starts a new training job.
+The existing best LoRA checkpoint may be reused manually as an initial
+adapter via `model.lora.initial_adapter`, but that does **not** restore the
+optimizer, scheduler, or previously trained classification heads and is not
+a proper 6→15-epoch resume. Do not call that a continued training run.
