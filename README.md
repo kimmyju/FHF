@@ -391,3 +391,51 @@ Use **the same prompt-disjoint split** when comparing with the ModernBERT
 18-class BAcc of approximately 0.33. This is a baseline only, not an
 implemented neural Style Branch or a guaranteed performance improvement.
 Only load a `.joblib` checkpoint if you trust its source.
+
+## ModernBERT + Style-only probability fusion (evaluation only)
+
+Run inference from the **saved** 18-class FHF checkpoint, join its validation
+probabilities with the Style-only TF-IDF predictions **by sample ID**, then
+compare a predeclared BERT:Style weight grid. No training, checkpoint updates,
+or neural Style Branch changes occur.
+
+```bash
+git pull
+python scripts/evaluate_fusion.py \
+  --config configs/ablations/model_only.yaml \
+  --style-predictions outputs/style-baseline/val_predictions.csv \
+  --output-dir outputs/fusion-eval
+```
+
+The command expects `outputs/model-only` to hold a local 18-class checkpoint
+and the configured `outputs/model-only/val.csv` to be the same held-out set
+used for the Style-only CSV. If necessary, first generate the Style-only
+predictions using `python scripts/style_baseline.py
+--config configs/ablations/model_only.yaml`. Keep original checkpoint
+and baseline predictions backed up before rerunning either training script.
+
+Default BERT weights: `1.0 0.8 0.7 0.5 0.0`, with the remaining weight
+applied to Style. Override using `--bert-weights 1.0 0.9 0.7 0.5 0.0`.
+For each weight, final predictions are the argmax of the weighted average of
+**normalized 18-class probabilities**, with class ordering from
+`fhf.labels.MODEL_NAMES`.
+
+Validation safeguards: exact matching sample IDs, unique IDs, matching
+`prompt_id` and gold `model` labels, all 18 class probabilities present,
+finite and normalized values, and consistency of the Style model's saved
+`pred_model` with its probabilities. An error terminates the evaluation
+rather than silently mixing different examples. This checks *alignment*, not
+the history of how either model was trained.
+
+Outputs under `outputs/fusion-eval`:
+
+- `evaluation.json`: original BERT and Style scores, prediction agreement,
+  both-wrong count/rate, complementary correct cases, and **oracle ensemble**
+  (true-label-based diagnostic upper bound, not deployable).
+- `fusion_grid.csv`: accuracy and 18-class BAcc for each fixed weight.
+- `val_predictions.csv`: per-example true label, individual predictions,
+  correct/incorrect flags, and all fusion-grid predictions.
+
+Selecting the best weight from the same validation data is exploratory:
+validate the chosen weight on an independent held-out set before claiming
+a generalization gain. Fusion may not improve on either standalone model.
