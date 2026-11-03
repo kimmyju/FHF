@@ -7,6 +7,8 @@ paths:
   train_split_csv: outputs/family-only/train_split.csv
   history_json: outputs/family-only/history.json
   config_snapshot: outputs/family-only/config_resolved.yaml
+  eval_csv: outputs/family-only/val.csv
+  eval_report: outputs/family-only/evaluation.json
 model:
   heads:
     family: true
