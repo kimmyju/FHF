@@ -182,3 +182,106 @@ def test_no_cross_dataset_false_prompt_id_matching(tmp_path):
     merged, val, clean, audit = prepare_external_training(cfg)
     assert not set(merged.prompt_id) & set(val.prompt_id)
     assert len(clean) == 4
+
+
+def test_passages_prompts_pair_joins_by_verified_key(tmp_path):
+    cfg = make_config(tmp_path)
+    write_official(tmp_path)
+    directory = tmp_path / "ntl"
+    directory.mkdir()
+    cfg["paths"]["external_source_path"] = "ntl"
+    frame = make_external().copy()
+    texts = frame.pop("prompt")
+    questions = list(dict.fromkeys(texts))
+    keys = [f"prompt_{questions.index(q)}" for q in texts]
+    frame["prompt_id"] = keys
+    frame.to_csv(directory / "passages.csv", index=False)
+    pd.DataFrame({
+        "id": [f"prompt_{i}" for i in range(len(questions))],
+        "text": questions,
+    }).to_csv(directory / "prompts.csv", index=False)
+    merged, val, clean, audit = prepare_external_training(cfg)
+    assert len(merged) == 54 + 4
+    assert len(val) == 18
+    assert len(clean) == 4
+    assert audit["source_join"]["join_passages_key"] == "prompt_id"
+    assert audit["source_join"]["join_prompts_key"] == "id"
+    assert audit["source_join"]["join_prompt_text_column"] == "text"
+    assert audit["source_join"]["join_matched_rows"] == len(frame)
+    assert audit["external_multi_model_prompt_groups"] == 2
+
+
+def test_pair_join_rejects_missing_foreign_keys(tmp_path):
+    cfg = make_config(tmp_path)
+    write_official(tmp_path)
+    folder = tmp_path / "raw_pair"
+    folder.mkdir()
+    cfg["paths"]["external_source_path"] = "raw_pair"
+    frame = make_external()
+    frame["prompt_id"] = ["exists"] * (len(frame) - 1) + ["missing"]
+    frame.drop(columns="prompt").to_csv(folder / "passages.csv", index=False)
+    pd.DataFrame({"id": ["exists"], "prompt": ["Write a question."]}).to_csv(
+        folder / "prompts.csv", index=False
+    )
+    with pytest.raises(ValueError, match="Cannot safely JOIN"):
+        prepare_external_training(cfg)
+
+
+def test_pair_join_rejects_duplicate_prompt_lookup_key(tmp_path):
+    cfg = make_config(tmp_path)
+    write_official(tmp_path)
+    folder = tmp_path / "raw_pair"
+    folder.mkdir()
+    cfg["paths"]["external_source_path"] = "raw_pair"
+    frame = make_external()
+    frame["prompt_id"] = "duplicated"
+    frame.drop(columns="prompt").to_csv(folder / "passages.csv", index=False)
+    pd.DataFrame({
+        "id": ["duplicated", "duplicated"],
+        "prompt": ["Write a question.", "Write a different question."],
+    }).to_csv(folder / "prompts.csv", index=False)
+    with pytest.raises(ValueError, match="Cannot safely JOIN"):
+        prepare_external_training(cfg)
+
+
+def test_pair_join_can_select_explicit_different_key_names(tmp_path):
+    cfg = make_config(tmp_path)
+    write_official(tmp_path)
+    folder = tmp_path / "ntl_pair"
+    folder.mkdir()
+    cfg["paths"]["external_source_path"] = "ntl_pair"
+    frame = make_external()
+    prompts = list(dict.fromkeys(frame.prompt))
+    frame["source_question_reference"] = frame.prompt.map(
+        lambda text: f"ref_{prompts.index(text)}"
+    )
+    frame = frame.drop(columns="prompt")
+    frame.to_csv(folder / "passages.csv", index=False)
+    pd.DataFrame({
+        "question_code": [f"ref_{i}" for i in range(len(prompts))],
+        "instruction_text": prompts,
+    }).to_csv(folder / "prompts.csv", index=False)
+    cfg["external_data"]["join"] = {
+        "passages_key": "source_question_reference",
+        "prompts_key": "question_code",
+        "prompt_text": "instruction_text",
+    }
+    merged, _, clean, audit = prepare_external_training(cfg)
+    assert len(merged) == 58
+    assert len(clean) == 4
+    assert audit["source_join"]["join_passages_key"] == "source_question_reference"
+
+
+def test_pair_join_does_not_join_by_row_order(tmp_path):
+    cfg = make_config(tmp_path)
+    write_official(tmp_path)
+    folder = tmp_path / "ntl_pair"
+    folder.mkdir()
+    cfg["paths"]["external_source_path"] = "ntl_pair"
+    passage = make_external().drop(columns="prompt")
+    passage.to_csv(folder / "passages.csv", index=False)
+    pd.DataFrame({"prompt": ["Different question"]}).to_csv(
+        folder / "prompts.csv", index=False
+    )
+    with pytest.raises(ValueError, match="Cannot safely JOIN"):
+        prepare_external_training(cfg)

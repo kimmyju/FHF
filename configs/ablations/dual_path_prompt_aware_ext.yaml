@@ -28,6 +28,12 @@ external_data:
     id: null
   # Add ONLY independently verified aliases of EXACT target versions.
   label_map: {}
+  # With passages.csv + prompts.csv, the loader joins by a validated
+  # prompt foreign key. Set these when column names are non-standard.
+  join:
+    passages_key: null
+    prompts_key: null
+    prompt_text: null
   expected_train_rows: 2159
   expected_validation_rows: 540
   min_chars: 20

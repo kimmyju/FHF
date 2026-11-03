@@ -561,11 +561,22 @@ generations to its TRAIN set only.
 
 ### Prepare external data
 
-Download `arxitekton/ntl-claude-gen-v2` from Kaggle and **extract** exactly one
-`.csv`, `.parquet`, or `.jsonl` under `data/external/ntl_v2/`. The local
-`data/` tree is gitignored, so downloaded samples are not pushed to GitHub.
-If placed elsewhere or if there are multiple files, select the exact file using
-`--set paths.external_source_path=data/your-file.csv`.
+Download `arxitekton/ntl-claude-gen-v2` from Kaggle and extract the
+**`passages.csv` and `prompts.csv` pair** under `data/external/ntl_v2/`.
+The loader automatically detects this exact filename pair and performs
+a validated many-to-one JOIN on the response table's prompt foreign key
+(e.g. `prompt_id`) and the prompt table's unique ID (e.g. `id`).
+**Never concatenate these files row-by-row.** It fails with both column lists
+and a mapping hint if it cannot prove that every response matches exactly
+one prompt. For non-standard schemas set:
+`external_data.join.passages_key`, `external_data.join.prompts_key`
+and, if needed, `external_data.join.prompt_text` in the YAML.
+The actual schema was not supplied, so these checks are deliberate.
+
+A single CSV/Parquet/JSONL file containing the needed joined columns
+also remains supported. The local `data/` tree is gitignored, so
+downloaded samples are not pushed to GitHub. To choose a different file
+use `--set paths.external_source_path=data/your-file.csv`.
 
 The Kaggle dataset's real column schema has **not** been verified by this
 repository. The loader detects unambiguous candidate columns (`text`,

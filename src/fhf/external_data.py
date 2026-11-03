@@ -40,7 +40,7 @@ def digest(text):
 
 
 def _source_file(path):
-    """Return the sole CSV, Parquet, or JSONL file in a user-provided location."""
+    """Find a single raw file or a recognized passages/prompts CSV pair."""
     path = Path(path).expanduser()
     allowed = {".csv", ".parquet", ".jsonl"}
     if path.is_file():
@@ -50,20 +50,153 @@ def _source_file(path):
     if not path.exists():
         raise FileNotFoundError(
             f"External dataset not found: {path}. Download and extract the "
-            "Kaggle dataset into that directory or override external_data.source_path."
+            "Kaggle dataset into that directory or override paths.external_source_path."
         )
     if not path.is_dir():
         raise ValueError(f"External source must be a file or directory: {path}")
     files = sorted(p for p in path.rglob("*") if p.is_file()
                    and p.suffix.lower() in allowed)
-    if len(files) != 1:
-        raise ValueError(
-            f"Expected exactly one CSV/Parquet/JSONL below {path}; found "
-            f"{len(files)}: {[str(p) for p in files[:20]]}. "
-            "Set external_data.source_path to the intended file."
-        )
-    return files[0]
+    if len(files) == 1:
+        return files[0]
+    if (len(files) == 2 and
+        {p.name.lower() for p in files} == {"passages.csv", "prompts.csv"}):
+        passage = next(p for p in files if p.name.lower() == "passages.csv")
+        prompt = next(p for p in files if p.name.lower() == "prompts.csv")
+        return (passage, prompt)
+    raise ValueError(
+        f"Expected exactly one CSV/Parquet/JSONL, or a passages.csv + prompts.csv "
+        f"pair below {path}; found {len(files)}: "
+        f"{[str(p) for p in files[:20]]}. "
+        "Set paths.external_source_path to the intended file or folder."
+    )
 
+
+def _read_passages_prompts(passage_path, prompt_path, settings):
+    """Join responses to prompt metadata by validated many-to-one key.
+
+    Never join by row position. The exact candidate key and prompt text must
+    be unambiguous; allow explicit join key overrides for alternate schemas.
+    """
+    passages = _read_source(passage_path)
+    prompts = _read_source(prompt_path)
+    if passages.empty or prompts.empty:
+        raise ValueError("passages.csv and prompts.csv must both be nonempty")
+
+    aliases = ("prompt_id", "prompt_idx", "prompt_key", "question_id",
+               "instruction_id", "prompt_hash", "prompt_uuid")
+    override = settings.get("join", {}) or {}
+    left_override = override.get("passages_key")
+    right_override = override.get("prompts_key")
+
+    if bool(left_override) != bool(right_override):
+        raise ValueError(
+            "Specify BOTH external_data.join.passages_key and "
+            "external_data.join.prompts_key, or neither."
+        )
+    if left_override:
+        options = [(left_override, right_override)]
+    else:
+        options = []
+        for left in aliases:
+            if left in passages:
+                for right in (left, "id", "prompt_id"):
+                    if right in prompts and (left, right) not in options:
+                        options.append((left, right))
+    def as_keys(frame, col):
+        values = frame[col]
+        if values.isna().any() or values.astype(str).str.strip().eq("").any():
+            return None
+        # Ignore only whitespace, not arbitrary coercion (e.g. 1 vs 1.0).
+        return values.astype(str).str.strip()
+
+    valid = []
+    for left, right in options:
+        if left not in passages or right not in prompts:
+            continue
+        pk = as_keys(prompts, right)
+        fk = as_keys(passages, left)
+        if pk is None or fk is None or pk.duplicated().any():
+            continue
+        if fk.isin(pk).all():
+            valid.append((left, right))
+    if not valid:
+        raise ValueError(
+            "Cannot safely JOIN passages.csv to prompts.csv. A unique prompt "
+            "lookup key and 100% matching passage keys are required. "
+            f"passages columns={list(passages.columns)}; "
+            f"prompts columns={list(prompts.columns)}. Set "
+            "external_data.join.passages_key and "
+            "external_data.join.prompts_key in the YAML using the actual keys."
+        )
+    # If multiple *different* joins are possible, don't guess which is intended.
+    chosen = valid[0]
+    if len(valid) > 1:
+        candidates = []
+        for left, right in valid:
+            if not any((as_keys(passages, left).equals(as_keys(passages, p[0]))
+                        and as_keys(prompts, right).equals(as_keys(prompts, p[1])))
+                       for p in candidates):
+                candidates.append((left, right))
+        if len(candidates) > 1:
+            raise ValueError(
+                f"Multiple possible JOIN keys {valid}. Explicitly select "
+                "external_data.join.passages_key / prompts_key."
+            )
+        chosen = candidates[0]
+    left, right = chosen
+
+    # In prompt table, 'text' can mean the question, never the passage.
+    prompt_field = override.get("prompt_text")
+    if prompt_field:
+        if prompt_field not in prompts:
+            raise ValueError(
+                f"external_data.join.prompt_text={prompt_field!r} not in "
+                f"prompts columns={list(prompts.columns)}"
+            )
+    else:
+        candidates = [c for c in ("prompt_text", "prompt", "question",
+                                  "instruction", "input_prompt", "user_prompt", "text")
+                      if c in prompts and c != right]
+        if len(candidates) != 1:
+            raise ValueError(
+                f"Cannot identify a unique prompt text column in prompts.csv "
+                f"(candidates={candidates}, columns={list(prompts.columns)}). "
+                "Set external_data.join.prompt_text explicitly."
+            )
+        prompt_field = candidates[0]
+
+    lookup = prompts[[right, prompt_field]].copy()
+    lookup.columns = ["__join_key", "__prompt_text"]
+    lookup["__join_key"] = lookup["__join_key"].astype(str).str.strip()
+    response = passages.copy()
+    response["__join_key"] = response[left].astype(str).str.strip()
+    joined = response.merge(
+        lookup, on="__join_key", how="left", validate="many_to_one",
+        sort=False, indicator=True,
+    )
+    if len(joined) != len(passages) or (joined["_merge"] != "both").any():
+        raise ValueError("Prompt JOIN changed passage rows or left unmatched responses")
+    if joined["__prompt_text"].isna().any() or joined["__prompt_text"].astype(str).str.strip().eq("").any():
+        raise ValueError("Joined prompt text contains empty values")
+    joined = joined.drop(columns=["_merge", "__join_key"])
+    # Avoid triggering the normal single-file prompt_id-consistency check
+    # on ambiguous identifiers. For grouped supervision, the normalized
+    # prompt *content* is used as the authoritative identity.
+    if "prompt_id" in joined:
+        joined = joined.drop(columns=["prompt_id"])
+    if "prompt_text" in joined:
+        joined = joined.drop(columns=["prompt_text"])
+    joined["prompt_text"] = joined.pop("__prompt_text")
+    return joined, {
+        "passages_file": str(passage_path),
+        "prompts_file": str(prompt_path),
+        "passages_rows": int(len(passages)),
+        "prompts_rows": int(len(prompts)),
+        "join_passages_key": left,
+        "join_prompts_key": right,
+        "join_prompt_text_column": prompt_field,
+        "join_matched_rows": int(len(joined)),
+    }
 
 def _read_source(path):
     if path.suffix.lower() == ".csv":
@@ -130,8 +263,16 @@ def prepare_external_training(config):
     validation = load_csv(resolve_path(config, "frozen_validation_csv"))
     _checked_split(original_train, validation, settings)
 
-    raw_file = _source_file(resolve_path(config, "external_source_path"))
-    raw = _read_source(raw_file)
+    raw_source = _source_file(resolve_path(config, "external_source_path"))
+    join_audit = {}
+    if isinstance(raw_source, tuple):
+        raw, join_audit = _read_passages_prompts(
+            raw_source[0], raw_source[1], settings
+        )
+        raw_file = raw_source[0]
+    else:
+        raw_file = raw_source
+        raw = _read_source(raw_file)
     if raw.empty:
         raise ValueError(f"No rows in external dataset: {raw_file}")
     found = {kind: _column_name(raw, kind, settings) for kind in ALIASES}
@@ -160,6 +301,7 @@ def prepare_external_training(config):
     all_label_counts = dict(Counter(source_labels))
     report = {
         "source_file": str(raw_file),
+        "source_join": join_audit,
         "raw_rows": int(len(raw)),
         "selected_columns": found,
         "raw_model_counts": dict(sorted(all_label_counts.items())),

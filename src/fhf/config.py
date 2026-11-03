@@ -188,6 +188,9 @@ def validate_config(conf):
             raise ValueError("external_data.columns must be a mapping")
         if not isinstance(ext.get("label_map", {}), dict):
             raise ValueError("external_data.label_map must be a mapping")
+        join = ext.get("join", {}) or {}
+        if not isinstance(join, dict):
+            raise ValueError("external_data.join must be a mapping")
         for key in ("min_chars", "min_words", "min_accepted_rows",
                     "min_multi_model_prompt_groups"):
             if int(ext.get(key, 0)) < 0:
