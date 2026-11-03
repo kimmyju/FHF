@@ -7,6 +7,8 @@ paths:
   train_split_csv: outputs/no-contrastive/train_split.csv
   history_json: outputs/no-contrastive/history.json
   config_snapshot: outputs/no-contrastive/config_resolved.yaml
+  eval_csv: outputs/no-contrastive/val.csv
+  eval_report: outputs/no-contrastive/evaluation.json
 model:
   heads:
     projection: false
