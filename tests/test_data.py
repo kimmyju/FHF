@@ -45,3 +45,53 @@ def test_sampler_changes_between_epochs_but_is_reproducible():
     assert all(len(batch) == 8 for batch in first)
     with pytest.raises(ValueError, match="non-negative"):
         sampler.set_epoch(-1)
+
+
+def test_sampler_equalizes_18_model_exposures_and_uses_all_examples():
+    """With 120 examples/class and 270 steps each model is seen 120 times."""
+    from collections import Counter
+    from fhf.data import FamilyBatchSampler
+    labels = list(range(18)) * 120
+    sampler = FamilyBatchSampler(
+        labels, batch_families=2, models_per_family=2,
+        samples_per_model=2, steps_per_epoch=270, seed=42)
+    batches = list(sampler)
+    counts = Counter(labels[i] for batch in batches for i in batch)
+    assert len(batches) == 270
+    assert all(len(batch) == 8 for batch in batches)
+    assert all(counts[model] == 120 for model in range(18))
+    assert sampler.last_model_exposures == dict(counts)
+    assert len(set(i for batch in batches for i in batch)) == len(labels)
+
+    for batch in batches:
+        families = {MODEL_FAMILY_IDS[labels[i]] for i in batch}
+        assert len(families) == 2
+        for family in families:
+            model_counts = Counter(labels[i] for i in batch
+                                   if MODEL_FAMILY_IDS[labels[i]] == family)
+            assert sum(model_counts.values()) == 4
+            assert all(count >= 2 for count in model_counts.values())
+            if len({m for m in range(18) if MODEL_FAMILY_IDS[m] == family}) >= 2:
+                assert len(model_counts) == 2
+
+
+def test_sampler_balances_unequal_data_sizes_and_short_epochs():
+    """Model balancing must not depend on per-class dataset counts."""
+    from collections import Counter
+    from fhf.data import FamilyBatchSampler
+    # Covers all 6 families with highly unequal numbers of source examples.
+    labels = [0] * 3 + [5] * 9 + [9] * 4 + [14] * 13 + [15] * 8 + [17] * 6
+    sampler = FamilyBatchSampler(
+        labels, batch_families=2, models_per_family=2,
+        samples_per_model=2, steps_per_epoch=40, seed=9)
+    batches = list(sampler)
+    counts = Counter(labels[i] for batch in batches for i in batch)
+    assert max(counts.values()) - min(counts.values()) <= 4
+    assert all(len(batch) == 8 for batch in batches)
+    assert sum(counts.values()) == 320
+
+
+def test_sampler_rejects_invalid_step_count():
+    from fhf.data import FamilyBatchSampler
+    with pytest.raises(ValueError, match="steps_per_epoch"):
+        FamilyBatchSampler(list(range(18)), steps_per_epoch=0)
