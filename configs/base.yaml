@@ -1,0 +1,71 @@
+# Shared experiment configuration. Relative paths are resolved against paths.base_dir.
+experiment: fhf-hierarchical
+seed: 42
+
+paths:
+  base_dir: .
+  train_csv: data/train.csv
+  checkpoint_dir: outputs/fhf-base
+  validation_csv: outputs/fhf-base/val.csv
+  train_split_csv: outputs/fhf-base/train_split.csv
+  history_json: outputs/fhf-base/history.json
+  config_snapshot: outputs/fhf-base/config_resolved.yaml
+  eval_csv: outputs/fhf-base/val.csv
+  eval_report: outputs/fhf-base/evaluation.json
+  test_csv: data/test.csv
+  submission_parquet: submission.parquet
+  external_csv: data/external.csv
+  external_encoder_dir: outputs/fhf-external
+
+model:
+  encoder: microsoft/deberta-v3-base
+  tokenizer: null  # Defaults to model.encoder. Override after external pretraining.
+  max_length: 384
+  dropout: 0.10
+  projection_dim: 128
+  heads:
+    family: true
+    model: true
+    projection: true
+
+losses:
+  exact_classification:
+    enabled: true
+    weight: 1.0
+  family:
+    enabled: true
+    weight: 0.25
+  intra_contrastive:
+    enabled: true
+    weight: 0.25
+    temperature: 0.12
+    hard_weight: 2.0
+  rdrop:
+    enabled: true
+    weight: 0.05
+  hotflip:
+    enabled: false
+    weight: 0.05
+    max_examples: 2
+
+training:
+  epochs: 5
+  learning_rate: 0.00002
+  weight_decay: 0.01
+  grad_clip: 1.0
+  validation_fraction: 0.20
+  batch_families: 3
+  models_per_family: 2
+  samples_per_model: 2
+  steps_per_epoch: null
+  eval_batch_size: 32
+  num_workers: 0
+
+inference:
+  batch_size: 32
+
+external_pretraining:
+  epochs: 2
+  batch_size: 32
+  learning_rate: 0.00002
+  seed: 42

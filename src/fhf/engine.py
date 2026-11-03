@@ -1,17 +1,17 @@
-"""Reproducible train/validation loops and batch prediction for FHF."""
+"""Experiment-configured optimization, checkpoint selection and hierarchical prediction loops."""
+import json
 import random
 import numpy as np
 import torch
 from torch.nn import functional as F
-from torch.utils.data import DataLoader
-from .data import TextDataset, make_collator
+
 from .losses import objective, symmetric_kl
 from .hotflip import hotflip_batch
 from .metrics import report
 
 
 def seed_everything(seed):
-    """Seed Python, NumPy and PyTorch for comparable experimental runs."""
+    """Seed Python, NumPy, CPU and CUDA RNGs."""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -20,61 +20,83 @@ def seed_everything(seed):
 
 
 def predict(model, loader, device):
-    """Return predicted IDs, optionally true labels, without stochastic dropout."""
+    """Predict precise model labels if available, else provider IDs for family-only ablations."""
     model.eval()
-    predictions, targets = [], []
+    predictions, labels = [], []
     with torch.inference_mode():
         for batch in loader:
-            if 'labels' in batch:
-                targets.extend(batch.pop('labels').tolist())
-                batch.pop('families')
-            outputs = model(**{k:v.to(device) for k,v in batch.items()})
-            predictions.extend(outputs['log_probs'].argmax(dim=-1).cpu().tolist())
-    return predictions, targets
+            if "labels" in batch:
+                labels.extend((batch["labels"] if model.heads["model"] else batch["families"]).tolist())
+                batch.pop("labels")
+                batch.pop("families")
+            out = model(**{key: val.to(device) for key, val in batch.items()})
+            key = "log_probs" if model.heads["model"] else "family_log_probs"
+            predictions.extend(out[key].argmax(dim=-1).cpu().tolist())
+    return predictions, labels
 
 
-def fit(model, tokenizer, train_loader, valid_loader, out_dir, epochs=5,
-        lr=2e-5, weight_decay=0.01, family_weight=0.25,
-        contrastive_weight=0.25, consistency_weight=0.05, hotflip_weight=0.,
-        hotflip_max_examples=2, grad_clip=1., device='cpu'):
-    """Fine-tune classification heads + encoder; retain best prompt-held-out checkpoint."""
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+def _evaluate(predictions, targets, model):
+    """Always compute correct label-space metrics, never map providers to arbitrary versions."""
+    if model.heads["model"]:
+        return report(targets, predictions)
+    from sklearn.metrics import balanced_accuracy_score, accuracy_score, recall_score
+    from .labels import FAMILY_NAMES
+    return {
+        "n": len(targets),
+        "family_balanced_accuracy": float(balanced_accuracy_score(targets, predictions)),
+        "family_accuracy": float(accuracy_score(targets, predictions)),
+        "recall_by_family": dict(zip(FAMILY_NAMES,
+            [float(x) for x in recall_score(targets, predictions,
+                                           labels=list(range(len(FAMILY_NAMES))),
+                                           average=None, zero_division=0)])),
+    }
+
+
+def fit(model, tokenizer, train_loader, valid_loader, out_dir, config, device="cpu"):
+    """Train according to YAML head/loss switches, saving the best prompt-held-out model."""
+    settings, losses = config["training"], config["losses"]
+    optimizer = torch.optim.AdamW(model.parameters(),
+        lr=float(settings["learning_rate"]), weight_decay=float(settings["weight_decay"]))
     model.to(device)
-    model._fhf_tokenizer = tokenizer  # Used only by optional HotFlip token filtering.
-    best = -float('inf')
-    history = []
-    for epoch in range(epochs):
+    model._fhf_tokenizer = tokenizer
+    best, history = -float("inf"), []
+    for epoch in range(int(settings["epochs"])):
         model.train()
-        total, count = 0., 0
+        total, count = 0.0, 0
         for batch in train_loader:
-            batch = {k:v.to(device) for k,v in batch.items()}
-            labels, families = batch.pop('labels'), batch.pop('families')
-            inputs = batch
+            batch = {key: val.to(device) for key, val in batch.items()}
+            labels, families = batch.pop("labels"), batch.pop("families")
             optimizer.zero_grad(set_to_none=True)
-            out = model(**inputs)
-            loss, _ = objective(out, labels, families, family_weight, contrastive_weight)
-            if consistency_weight > 0:
-                out2 = model(**inputs)
-                loss = loss + consistency_weight * symmetric_kl(out['log_probs'], out2['log_probs'])
-            if hotflip_weight > 0:
-                sample = dict(inputs, labels=labels, families=families)
-                changed_ids = hotflip_batch(model, sample, hotflip_max_examples)
-                if changed_ids is not None:
-                    altered = model(input_ids=changed_ids, attention_mask=inputs['attention_mask'])
-                    # Only use original prediction as a soft consistency target, not as ground truth for edits.
-                    loss = loss + hotflip_weight * F.kl_div(
-                        altered['log_probs'], out['log_probs'].detach().exp(), reduction='batchmean')
+            out = model(**batch)
+            loss, _ = objective(out, labels, families, config)
+            if losses["rdrop"]["enabled"] and losses["rdrop"]["weight"] > 0:
+                second = model(**batch)
+                target = "log_probs" if model.heads["model"] else "family_log_probs"
+                loss = loss + float(losses["rdrop"]["weight"]) * symmetric_kl(
+                    out[target], second[target])
+            if losses["hotflip"]["enabled"] and losses["hotflip"]["weight"] > 0:
+                sample = dict(batch, labels=labels, families=families)
+                changed = hotflip_batch(model, sample, int(losses["hotflip"]["max_examples"]))
+                if changed is not None:
+                    new = model(input_ids=changed, attention_mask=batch["attention_mask"])
+                    target = "log_probs" if model.heads["model"] else "family_log_probs"
+                    loss = loss + float(losses["hotflip"]["weight"]) * F.kl_div(
+                        new[target], out[target].detach().exp(), reduction="batchmean")
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), float(settings["grad_clip"]))
             optimizer.step()
-            total += loss.item()
+            total += float(loss.detach())
             count += 1
         preds, truth = predict(model, valid_loader, device)
-        metrics = report(truth, preds)
-        score = metrics['balanced_accuracy_observed_classes']
-        history.append(dict(epoch=epoch+1, training_loss=total/max(count,1), metrics=metrics))
-        print(f'Epoch {epoch+1}: loss={total/max(count,1):.4f}; val balanced acc={score:.4f}')
+        metrics = _evaluate(preds, truth, model)
+        score = metrics.get("balanced_accuracy_observed_classes", metrics.get("family_balanced_accuracy"))
+        history.append({"epoch": epoch + 1, "training_loss": total / max(count, 1),
+                        "metrics": metrics})
+        print(f"Epoch {epoch+1}: loss={total/max(count,1):.4f} val balanced accuracy={score:.4f}")
         if score > best:
             best = score
-            model.save_checkpoint(out_dir, tokenizer, extra={'best_epoch':epoch+1,'validation_balanced_accuracy':score})
+            model.save_checkpoint(out_dir, tokenizer, extra={
+                "best_epoch": epoch+1, "validation_balanced_accuracy": score,
+                "experiment": config["experiment"],
+            })
     return history

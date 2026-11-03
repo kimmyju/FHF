@@ -1,34 +1,35 @@
-"""Run independent labeled-data evaluation and save classification/recall metrics."""
+"""Evaluate a saved model with paths and inference settings from YAML."""
 import argparse
 import json
-from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
-from fhf.model import FingerprintModel
+
+from fhf.config import load_config, resolve_path
 from fhf.data import TextDataset, load_csv, make_collator
-from fhf.engine import predict
-from fhf.metrics import report
+from fhf.model import FingerprintModel
+from fhf.engine import predict, _evaluate
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--checkpoint', required=True)
-    p.add_argument('--data', required=True)
-    p.add_argument('--output', default='evaluation.json')
-    p.add_argument('--batch-size', type=int, default=32)
-    p.add_argument('--max-length', type=int, default=384)
-    args = p.parse_args()
-    df = load_csv(args.data)
-    model, tokenizer, _ = FingerprintModel.from_checkpoint(args.checkpoint)
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", default="configs/base.yaml")
+    parser.add_argument("--set", action="append", default=[])
+    args = parser.parse_args()
+    conf = load_config(args.config, args.set)
+    df = load_csv(resolve_path(conf, "eval_csv"))
+    model, tokenizer, _ = FingerprintModel.from_checkpoint(resolve_path(conf, "checkpoint_dir"))
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     model.to(device)
-    loader = DataLoader(TextDataset(df, tokenizer, args.max_length), batch_size=args.batch_size,
+    data = TextDataset(df, tokenizer, int(conf["model"]["max_length"]))
+    loader = DataLoader(data, batch_size=int(conf["inference"]["batch_size"]),
                         collate_fn=make_collator(tokenizer))
-    predictions, ground_truth = predict(model, loader, device)
-    summary = report(ground_truth, predictions)
-    Path(args.output).write_text(json.dumps(summary, indent=2))
-    print(json.dumps({k:v for k,v in summary.items() if not isinstance(v,(dict,list))}, indent=2))
+    prediction, target = predict(model, loader, device)
+    metrics = _evaluate(prediction, target, model)
+    dest = resolve_path(conf, "eval_report")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+    print(f"Evaluation written to {dest}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

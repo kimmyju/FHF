@@ -1,0 +1,15 @@
+# Both classifier heads remain active; projection and contrastive loss disabled.
+extends: ../base.yaml
+experiment: hierarchy-no-contrastive
+paths:
+  checkpoint_dir: outputs/no-contrastive
+  validation_csv: outputs/no-contrastive/val.csv
+  train_split_csv: outputs/no-contrastive/train_split.csv
+  history_json: outputs/no-contrastive/history.json
+  config_snapshot: outputs/no-contrastive/config_resolved.yaml
+model:
+  heads:
+    projection: false
+losses:
+  intra_contrastive:
+    enabled: false

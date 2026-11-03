@@ -1,20 +1,19 @@
-"""Kaggle Code Competition entrypoint: offline test CSV -> submission.parquet."""
-import os
-from pathlib import Path
+"""Entrypoint for a Kaggle internet-disabled Notebook; all paths come from YAML."""
+import argparse
+from fhf.config import load_config, resolve_path
 from predict import submit
 
 
 def main():
-    checkpoint = os.environ.get('FHF_CHECKPOINT', '/kaggle/input/fhf-checkpoint')
-    test = '/kaggle/input/competitions/name-that-llm/test.csv'
-    output = '/kaggle/working/submission.parquet'
-    for path in (checkpoint, test):
-        if not Path(path).exists():
-            raise FileNotFoundError(f'Missing Kaggle input: {path}')
-    submit(checkpoint, test, output,
-           batch_size=int(os.environ.get('FHF_BATCH_SIZE', '32')),
-           max_length=int(os.environ.get('FHF_MAX_LENGTH', '384')))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", default="configs/kaggle.yaml")
+    parser.add_argument("--set", action="append", default=[])
+    args = parser.parse_args()
+    conf = load_config(args.config, args.set)
+    submit(resolve_path(conf, "checkpoint_dir"), resolve_path(conf, "test_csv"),
+           resolve_path(conf, "submission_parquet"), conf["inference"]["batch_size"],
+           conf["model"]["max_length"])
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

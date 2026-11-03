@@ -1,0 +1,11 @@
+# Offline Kaggle paths; change input mount names to match your attached datasets.
+extends: base.yaml
+experiment: fhf-kaggle-submit
+paths:
+  base_dir: .
+  # Submission uses only checkpoint_dir, test_csv, and submission_parquet.
+  checkpoint_dir: /kaggle/input/fhf-checkpoint
+  test_csv: /kaggle/input/competitions/name-that-llm/test.csv
+  submission_parquet: /kaggle/working/submission.parquet
+inference:
+  batch_size: 32

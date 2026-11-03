@@ -1,119 +1,170 @@
 # FHF: Fine-grained Hierarchical Fingerprinting
 
-A research implementation for [Name That LLM](https://www.kaggle.com/competitions/name-that-llm). FHF combines a shared Transformer encoder with a hierarchical family/exact-model classifier, same-model supervised contrastive learning with hard within-family negatives, optional stochastic consistency, and an experimental gradient-guided HotFlip objective.
+Config-driven research implementation for the [Name That LLM](https://www.kaggle.com/competitions/name-that-llm) competition. This is an **experimental pipeline**, not a trained model or a verified Kaggle leaderboard result.
 
-**Status:** Source implementation with unit tests. No pretrained checkpoint, competition dataset, or validated leaderboard score is included. This approach has not been shown to beat a standard classifier. The repository's license applies to the code only.
+## Encoder: what is currently configured?
 
-## Method
+**Default: `microsoft/deberta-v3-base`.** It is a Hugging Face text encoder example, not an included checkpoint or a model that has already been fine-tuned. Set `model.encoder` and optionally `model.tokenizer` in YAML to use another pretrained encoder. The project uses `AutoModel`, so this path must point to an **encoder-compatible** pretrained model (not an arbitrary generative/decoder-only LLM). The shared output uses masked mean pooling.
 
-Given a text passage, the encoder produces a representation z. A family head estimates P(family|text), and a conditional model head estimates P(model|family,text). Their product forms a normalized distribution over the exact 18 competition models.
+## YAML experiments
+
+All paths, training hyperparameters, encoder settings, individual head switches, and individual loss switches are maintained under `configs/`:
 
 ```text
-L = NLL_18 + alpha * CE_family + beta * SupCon_hard + gamma * KL_RDrop + delta * KL_HotFlip
+configs/
+  base.yaml                       default full hierarchical model
+  kaggle.yaml                     offline Kaggle submission mounts
+  external.yaml                   optional external-data pretraining
+  ablations/
+    model_only.yaml               direct 18-class head only
+    family_only.yaml              6-class provider head only
+    no_contrastive.yaml           hierarchy without projection/contrastive
+    hotflip.yaml                  hierarchy plus constrained HotFlip
 ```
 
-SupCon uses same-version positives and upweights different-version negatives *within the same company*. R-Drop uses two stochastic passes of **unchanged text**. HotFlip is optional, replaces at most one eligible single-token discourse marker with another using a first-order gradient estimate, then penalizes inconsistency. HotFlip can modify stylistic evidence and is not guaranteed to preserve generator identity; treat this as an ablation, not reliable label-preserving augmentation.
+`configs/base.yaml` includes:
 
-## Structure
+```yaml
+paths:
+  base_dir: .
+  train_csv: data/train.csv
+  checkpoint_dir: outputs/fhf-base
+  test_csv: data/test.csv
+  submission_parquet: submission.parquet
+model:
+  encoder: microsoft/deberta-v3-base
+  tokenizer: null
+  max_length: 384
+  dropout: 0.10
+  projection_dim: 128
+  heads:
+    family: true
+    model: true
+    projection: true
+losses:
+  exact_classification: {enabled: true, weight: 1.0}
+  family: {enabled: true, weight: 0.25}
+  intra_contrastive:
+    enabled: true
+    weight: 0.25
+    temperature: 0.12
+    hard_weight: 2.0
+  rdrop: {enabled: true, weight: 0.05}
+  hotflip: {enabled: false, weight: 0.05, max_examples: 2}
+```
 
-- `src/fhf/labels.py`: Exact 18 labels and six model providers.
-- `src/fhf/data.py`: CSV loader, validation, group split, family-balanced batch sampler.
-- `src/fhf/model.py`: Hierarchical Transformer and offline checkpoint saving/loading.
-- `src/fhf/losses.py`: Classification, contrastive and KL losses.
-- `src/fhf/hotflip.py`: Constrained gradient-based token substitutions.
-- `src/fhf/engine.py`: Training, checkpoint selection, inference.
-- `src/fhf/metrics.py`: Balanced accuracy, per-class recall and confusion matrix.
-- `scripts/train.py`: Fine-tuning on labeled competition CSV.
-- `scripts/pretrain_external.py`: Optional real-generator-labeled external contrastive training.
-- `scripts/evaluate.py`: Labeled holdout evaluation.
-- `scripts/predict.py`: Parquet predictions.
-- `scripts/kaggle_submit.py`: Submission entrypoint.
-- `notebooks/kaggle_submit.ipynb`: Kaggle template.
-- `tests/`: Offline unit tests.
+The exact YAML additionally sets every train/validation/report path, seed, learning rate, epochs, batch sampling, gradient clipping, pretraining and inference batch size. Relative paths resolve from `paths.base_dir`; absolute paths also work. Each ablation YAML inherits `../base.yaml`, replacing only selected values. The resolved configuration is saved beside the checkpoint for reproducibility.
 
-## Install
+### Independent head combinations
 
-Python 3.10+ recommended. Install a compatible CUDA PyTorch build if necessary:
+| YAML selection | Family head | Model head | Projection head | Prediction space |
+|---|---|---|---|---|
+| `base.yaml` | ON | ON | ON | hierarchical 18-class |
+| `ablations/model_only.yaml` | OFF | ON | OFF | flat 18-class |
+| `ablations/family_only.yaml` | ON | OFF | OFF | 6-provider only |
+| `ablations/no_contrastive.yaml` | ON | ON | OFF | hierarchical 18-class |
+| `ablations/hotflip.yaml` | ON | ON | ON | hierarchical 18-class |
+
+The provider-only checkpoint is useful for ablations but **cannot submit to Kaggle** because the competition requires an exact 18-class label. The prediction script rejects it explicitly. Head and loss flags are validated for incompatible combinations.
+
+When family and model heads are enabled, the exact model distribution is `P(model|x) = P(family|x) * P(model|family,x)`. When only the model head is enabled, a flat 18-class softmax is used. Supervised contrastive learning uses same-model positives and more heavily penalizes within-family different-model negatives.
+
+## Installation
+
+Python 3.10+, PyTorch, Transformers and PyYAML:
 
 ```bash
-python -m pip install -e '.[dev]'
+git clone https://github.com/kimmyju/FHF.git
+cd FHF
+python -m pip install -e ".[dev]"
 python -m pytest -q
 ```
 
-## Data
+If you use GPU, install the appropriate PyTorch CUDA wheels. Model weights are downloaded by Hugging Face only where Internet is allowed.
 
-Download competition `train.csv` yourself and place it under `data/train.csv`. Expected columns are `id`, `text`, `model`, `prompt_id`. For evaluation, **split by prompt_id** to avoid letting the same prompt appear in both train and validation. Test data needs `id,text`, and is hidden until Kaggle evaluates the submitted notebook. Keep license terms for any external data.
+## Train
 
-## Training
-
-```bash
-python scripts/train.py \
-  --train-csv data/train.csv \
-  --backbone microsoft/deberta-v3-base \
-  --output-dir outputs/fhf-base --epochs 5 \
-  --family-weight 0.25 --contrastive-weight 0.25 \
-  --consistency-weight 0.05 --batch-families 3 \
-  --models-per-family 2 --samples-per-model 2
-```
-
-For baseline ablations set `--family-weight 0 --contrastive-weight 0 --consistency-weight 0`. To test HotFlip, add `--hotflip-weight 0.05 --hotflip-max-examples 2`. HotFlip is disabled by default and increases training cost substantially. The contrastive sampler may sample minority models with replacement. For robust model selection, repeat group-disjoint splits and seeds. The `microsoft/deberta-v3-base` backbone is an example, not a benchmark-validated optimal choice.
-
-## External representation pretraining (optional)
-
-CSV format: `text,model,provider` where `model` is the **actual generation model name** in that dataset, not one of the 18 Kaggle labels unless it genuinely matches. `provider` is recommended for within-family hard negatives. Historical model names MUST NOT be relabeled as current versions.
+Download the Kaggle competition `train.csv` to the configured path. Expected columns: `id,text,model,prompt_id`.
 
 ```bash
-python scripts/pretrain_external.py \
-  --csv data/external.csv \
-  --backbone microsoft/deberta-v3-base \
-  --output-dir outputs/external --epochs 2
+# Default 2-head hierarchy and contrastive learning
+python scripts/train.py --config configs/base.yaml
 
-python scripts/train.py \
-  --train-csv data/train.csv \
-  --backbone outputs/external/encoder \
-  --tokenizer outputs/external/tokenizer \
-  --output-dir outputs/fhf-external
+# Run separate head experiments
+python scripts/train.py --config configs/ablations/model_only.yaml
+python scripts/train.py --config configs/ablations/family_only.yaml
+python scripts/train.py --config configs/ablations/no_contrastive.yaml
+python scripts/train.py --config configs/ablations/hotflip.yaml
+
+# Change encoder, paths, epochs and individual components without editing Python:
+python scripts/train.py --config configs/base.yaml \
+  --set model.encoder=distilbert/distilbert-base-uncased \
+  --set paths.train_csv=/mnt/my_data/train.csv \
+  --set paths.checkpoint_dir=/mnt/experiments/run01 \
+  --set paths.validation_csv=/mnt/experiments/run01/val.csv \
+  --set paths.train_split_csv=/mnt/experiments/run01/train.csv \
+  --set paths.history_json=/mnt/experiments/run01/history.json \
+  --set paths.config_snapshot=/mnt/experiments/run01/config.yaml \
+  --set training.epochs=3 --set losses.intra_contrastive.enabled=false
 ```
 
-This is optional and requires sufficient same-model positives in each minibatch. External pretraining currently uses random batches; for sparse labels, a family-aware balanced sampler is a logical improvement. Sources to inspect independently include Chatbot Arena, UltraFeedback and SemEval Task 8. Review dataset licenses and competition rules.
+When changing the encoder, ensure `model.tokenizer` is null or points to its compatible tokenizer. Avoid mixing tokenizers between checkpoints. Rather than overriding many paths each run, create a child YAML with `extends: base.yaml` and a different `paths` section.
+
+The default split is **prompt-disjoint**, rather than random row-level. The code uses a family-balanced minibatch sampler so same-model positives exist for contrastive learning. The best validation checkpoint is saved at `paths.checkpoint_dir`.
+
+## External attribution pretraining (optional)
+
+Provide CSV columns `text,model` and optionally `provider`. Keep the actual generator name, even if it is from a historical model; **do not rename it to a Kaggle target label**.
+
+```bash
+python scripts/pretrain_external.py --config configs/external.yaml
+```
+
+Then create another run YAML with `model.encoder: outputs/fhf-external/encoder` and `model.tokenizer: outputs/fhf-external/tokenizer`. Externally pretrained models can cause negative transfer, and the simple external-data loader does not yet enforce model-balanced minibatches.
 
 ## Evaluate and predict
 
 ```bash
-python scripts/evaluate.py \
-  --checkpoint outputs/fhf-base \
-  --data outputs/fhf-base/val.csv \
-  --output outputs/fhf-base/report.json
+python scripts/evaluate.py --config configs/base.yaml
+python scripts/evaluate.py --config configs/ablations/family_only.yaml
 
-python scripts/predict.py \
-  --checkpoint outputs/fhf-base \
-  --test-csv data/test.csv \
-  --output submission.parquet
+python scripts/predict.py --config configs/base.yaml
+# Or use custom input/output paths:
+python scripts/predict.py --config configs/base.yaml \
+  --set paths.test_csv=/data/test.csv \
+  --set paths.submission_parquet=/tmp/submission.parquet
 ```
 
-`submission.parquet` has exactly two columns (`id`, `model`), one unique ID per row, and exactly one of the official 18 labels.
+Evaluation uses exact-model recall/balanced accuracy for 18-class checkpoints and separately labeled family metrics for family-only checkpoints. All 18-class predictions are written as a Parquet file with `id` and `model` columns, no missing values, no duplicate IDs.
 
-## Kaggle code competition submission
+## Kaggle notebook (Internet OFF)
 
-1. Train offline (e.g. research GPU server) and evaluate using prompt-disjoint validation.
-2. Upload the **full checkpoint folder** (`encoder/`, `tokenizer/`, `heads.pt`, `metadata.json`) as a **private** Kaggle dataset, and attach this source package as another dataset.
-3. In the Kaggle notebook adapt checkpoint/source mount locations from `notebooks/kaggle_submit.ipynb`.
-4. Ensure dependencies are already installed or attach an offline wheel bundle; Internet must be **OFF**. `torch`, `transformers`, `pandas`, `pyarrow` compatibility must be verified.
-5. Commit/submit. Kaggle reruns the notebook on hidden ~4,000-row test data. CPU/GPU notebook runtime must be <= 9 hours including startup and model loading.
+1. Train externally and attach the full checkpoint folder with `encoder`, `tokenizer`, `heads.pt`, and `metadata.json` to Kaggle as a **private** Dataset/Model.
+2. Attach this source repository as another Kaggle Dataset (or package it into the Notebook), retaining `src`, `scripts`, and `configs`.
+3. Edit `configs/kaggle.yaml` for your Kaggle mount names (or pass `--set paths.checkpoint_dir=...`).
+4. Run `notebooks/kaggle_submit.ipynb` or:
 
-### Important limitations
+```bash
+python scripts/kaggle_submit.py --config configs/kaggle.yaml
+```
 
-- The competition's ~2,699-row training set is small and may cause fingerprint overfitting.
-- Some validation splits may omit rare labels; inspect both observed-class Balanced Accuracy and 18-class diagnostic recall.
-- External historical LLM data can hurt, not help, fine-grained version attribution.
-- Gradient sensitivity need not correspond to a genuine linguistic fingerprint. Never change the hidden competition text before scoring.
-- Prior Kaggle/competition code and datasets are NOT bundled; this is a code-only repository.
-- Consult official Kaggle Rules before using paid generators, non-public weights or restricted datasets.
+The hidden competition test CSV is never available for local model selection. The interactive Kaggle Notebook may provide a one-row example. Kaggle reruns against the hidden test with Internet disabled; CPU or GPU Notebook runtime must be within nine hours. Make sure PyTorch, Transformers, PyYAML, Pandas, and PyArrow are available offline.
 
-## Attribution
+## Project files
 
-Inspired conceptually by the split retrieval/selection optimization and token-level HotFlip technique described in *Prompt Injection Attack to Tool Selection in LLM Agents* (ToolHijacker, NDSS 2026). FHF targets benign authorship attribution, not a prompt-injection attack. HotFlip, supervised contrastive learning, and hierarchical classifiers are pre-existing methods; demonstrating novelty would require careful experiments.
+- `src/fhf/config.py` - YAML inheritance, overrides, validation and path resolution
+- `src/fhf/labels.py` - Competition's exact 18 labels
+- `src/fhf/data.py` - Dataset loading, grouped splitting, balanced batches
+- `src/fhf/model.py` - Switchable heads, hierarchical/flat inference, offline checkpoints
+- `src/fhf/losses.py` - Loss objectives
+- `src/fhf/hotflip.py` - Optional gradient-based constrained marker substitution
+- `src/fhf/engine.py` - Training and evaluation loops
+- `src/fhf/metrics.py` - Balanced accuracy, per-model recall, confusion matrix
+- `scripts/train.py`, `evaluate.py`, `predict.py`, `pretrain_external.py`, `kaggle_submit.py`
+- `tests/` - Unit tests including YAML presets and independently enabled heads
 
-## License
+## Research and limitations
 
-MIT license applies to FHF source only. External models and datasets retain their own terms.
+This is inspired by the two-step optimization and gradient-guided token search of *Prompt Injection Attack to Tool Selection in LLM Agents* (ToolHijacker, NDSS 2026), adapted to benign LLM authorship attribution. These are established ingredients, not proof of research novelty. HotFlip is disabled by default; replacing discourse markers may alter the true author fingerprint. Its efficacy and stability on unseen prompts must be established empirically. No external dataset, actual model weights, hidden test labels or benchmark scores are included.
+
+Code license: MIT. External checkpoints and datasets retain their own licenses.
