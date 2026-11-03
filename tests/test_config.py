@@ -86,3 +86,15 @@ def test_style_hotflip_incompatibility_is_explicit():
     with pytest.raises(ValueError, match="regenerating perturbed"):
         load_config(ROOT / "configs/ablations/dual_path_style.yaml",
                     ["losses.hotflip.enabled=true"])
+
+
+def test_prompt_aware_preset_keeps_dual_path_settings():
+    control = load_config(ROOT / "configs/ablations/dual_path_style.yaml")
+    prompt = load_config(ROOT / "configs/ablations/dual_path_prompt_aware.yaml")
+    assert control["model"] == prompt["model"]
+    assert control["training"] == prompt["training"]
+    assert prompt["losses"]["intra_contrastive"]["mode"] == "prompt_aware"
+    assert control["losses"]["intra_contrastive"]["mode"] == "standard"
+    assert prompt["losses"]["intra_contrastive"]["weight"] == (
+        control["losses"]["intra_contrastive"]["weight"]
+    )

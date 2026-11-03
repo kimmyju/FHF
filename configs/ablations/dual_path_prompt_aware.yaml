@@ -1,0 +1,25 @@
+# Prompt-aware contrastive experiment, preserving the working dual-path model.
+# Only the contrastive pair construction and its hard-negative weighting change.
+extends: dual_path_style.yaml
+experiment: fhf-dual-path-prompt-aware
+paths:
+  checkpoint_dir: outputs/dual-path-prompt-aware/checkpoint
+  validation_csv: outputs/dual-path-prompt-aware/val.csv
+  train_split_csv: outputs/dual-path-prompt-aware/train_split.csv
+  history_json: outputs/dual-path-prompt-aware/history.json
+  config_snapshot: outputs/dual-path-prompt-aware/config_resolved.yaml
+  eval_csv: outputs/dual-path-prompt-aware/val.csv
+  eval_report: outputs/dual-path-prompt-aware/evaluation.json
+
+losses:
+  intra_contrastive:
+    enabled: true
+    weight: 0.25
+    temperature: 0.12
+    hard_weight: 2.0
+    mode: prompt_aware
+    same_prompt_weight: 3.0
+
+wandb:
+  run_name: dual-path-prompt-aware
+  tags: [modernbert, lora, dual-path, style, hierarchical, prompt-aware-contrastive]

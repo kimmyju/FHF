@@ -500,3 +500,54 @@ perturbations would leave the raw-text style features out of sync.
 assume it will achieve BAcc 0.745, and keep the existing Flat and Hierarchical
 runs as baselines. This experiment retains the previous contrastive loss and
 sampler; prompt-aware contrastive training is *not* included here.
+
+## Prompt-aware contrastive dual-path experiment
+
+`configs/ablations/dual_path_prompt_aware.yaml` extends the
+`dual_path_style.yaml` configuration. It keeps ModernBERT, Attention
+Pooling, the 4096-hash Style Branch, Gated Fusion, independent Flat Head,
+hierarchical and projection heads, R-Drop, the same training budget, and
+the same `intra_contrastive.weight: 0.25`. Only the **contrastive pairing
+strategy** and additional same-prompt hard-negative weight change.
+
+```bash
+git pull
+python scripts/train.py --config configs/ablations/dual_path_prompt_aware.yaml
+```
+
+Output: `outputs/dual-path-prompt-aware/`. This is a new training run,
+**not** a continuation of the 0.378 dual-path checkpoint. The existing
+dual-path checkpoint remains intact.
+
+With the prompt-aware switch:
+- Positive pairs share the exact generator model but have **different
+  prompt IDs**, reducing reward for simply matching a topic.
+- Strong hard negatives are answers to the **same prompt from different
+  generator models** (factor `same_prompt_weight: 3.0`).
+- Other different-model negatives remain, with same-family negatives
+  also weighted by `hard_weight: 2.0`.
+- Same-model, same-prompt duplicates are excluded from the contrastive
+  denominator instead of being treated as negatives.
+- `PromptAwareFamilyBatchSampler` retains the old model-balanced choice
+  of family/model slots but fills them from aligned prompt IDs, sharing
+  an anchor prompt where possible while selecting different prompts for
+  same-model positives.
+- `prompt_id` stays in **train data metadata only**. It is removed before
+  the Transformer forward pass and never supplied during validation,
+  standard inference or Kaggle submission.
+- W&B logs `train/prompt_positive_pairs` and
+  `train/prompt_hard_negative_pairs` per logged optimizer step to
+  verify pair availability.
+
+A prompt-disjoint train/validation split is still used, ensuring no
+validation prompt is present in training. The sampler checks that each
+training model has responses to at least two distinct prompts and that at
+least one prompt is shared across different models. If the required
+structure is missing, it fails rather than silently treating arbitrary
+pairs as matched. For partially overlapping prompt collections, not
+every batch is guaranteed to include a same-prompt negative; inspect
+the W&B pair-count metrics.
+
+Run the previous `dual_path_style.yaml` command as the control. Any
+improvement should be verified over multiple seeds, not attributed to
+prompt-aware loss alone on one prompt split. No performance gain is guaranteed.

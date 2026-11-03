@@ -9,7 +9,7 @@ import numpy as np
 import torch
 from torch.nn import functional as F
 
-from .losses import objective, symmetric_kl
+from .losses import objective, symmetric_kl, prompt_aware_pair_counts
 from .hotflip import hotflip_batch
 from .metrics import report, oracle_within_family_predictions
 from .tracking import WandbTracker
@@ -175,6 +175,7 @@ def fit(model, tokenizer, train_loader, valid_loader, out_dir, config, device="c
         for step, batch in enumerate(train_loader):
             batch = {key: val.to(device) for key, val in batch.items()}
             labels, families = batch.pop("labels"), batch.pop("families")
+            prompt_ids = batch.pop("prompt_ids", None)
             # Re-scale the last partial accumulation window to preserve mean gradients.
             remainder = len(train_loader) % accumulation
             divisor = remainder if remainder and step >= (len(train_loader) - remainder) else accumulation
@@ -182,7 +183,9 @@ def fit(model, tokenizer, train_loader, valid_loader, out_dir, config, device="c
                         if precision is not None else nullcontext())
             with autocast:
                 out = model(**batch)
-                loss, components = objective(out, labels, families, config)
+                loss, components = objective(
+                    out, labels, families, config, prompt_ids=prompt_ids
+                )
                 if losses["rdrop"]["enabled"] and losses["rdrop"]["weight"] > 0:
                     second = model(**batch)
                     key = "log_probs" if model.heads["model"] else "family_log_probs"
@@ -223,6 +226,10 @@ def fit(model, tokenizer, train_loader, valid_loader, out_dir, config, device="c
                         "train/learning_rate": lr_used,
                         **{f"train/loss_{key}": float(value)
                            for key, value in components.items()},
+                        **(dict(zip(
+                            ("train/prompt_positive_pairs", "train/prompt_hard_negative_pairs"),
+                            prompt_aware_pair_counts(labels, prompt_ids),
+                        )) if prompt_ids is not None else {}),
                     })
             total += raw_loss
             count += 1

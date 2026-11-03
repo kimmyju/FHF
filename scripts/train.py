@@ -14,7 +14,10 @@ from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 
 from fhf.config import load_config, resolve_path
-from fhf.data import load_csv, grouped_split, TextDataset, FamilyBatchSampler, make_collator
+from fhf.data import (
+    load_csv, grouped_split, TextDataset, FamilyBatchSampler,
+    PromptAwareFamilyBatchSampler, make_collator,
+)
 from fhf.engine import fit, seed_everything
 from fhf.model import FingerprintModel
 from fhf.tracking import WandbTracker
@@ -50,15 +53,23 @@ def run_training(cfg):
         style=model_cfg.get("style", {"enabled": False}),
         residual_fusion=model_cfg.get("residual_fusion", {"enabled": False}),
     )
+    prompt_aware = (
+        cfg["losses"]["intra_contrastive"]["enabled"]
+        and float(cfg["losses"]["intra_contrastive"]["weight"]) > 0
+        and cfg["losses"]["intra_contrastive"].get("mode", "standard") == "prompt_aware"
+    )
     training_ds = TextDataset(
-        train, tokenizer, int(model_cfg["max_length"]), style_config=model.style_config
+        train, tokenizer, int(model_cfg["max_length"]), style_config=model.style_config,
+        include_prompt_id=prompt_aware,
     )
     valid_ds = TextDataset(
         val, tokenizer, int(model_cfg["max_length"]), style_config=model.style_config
     )
     collator = make_collator(tokenizer)
-    sampler = FamilyBatchSampler(
+    sampler_cls = PromptAwareFamilyBatchSampler if prompt_aware else FamilyBatchSampler
+    sampler = sampler_cls(
         training_ds.labels,
+        **({"prompt_ids": training_ds.prompt_ids} if prompt_aware else {}),
         batch_families=int(train_cfg["batch_families"]),
         models_per_family=int(train_cfg["models_per_family"]),
         samples_per_model=int(train_cfg["samples_per_model"]),

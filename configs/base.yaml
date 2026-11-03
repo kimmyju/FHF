@@ -63,6 +63,8 @@ losses:
     weight: 0.25
     temperature: 0.12
     hard_weight: 2.0
+    mode: standard  # standard | prompt_aware
+    same_prompt_weight: 3.0
   rdrop:
     enabled: true
     weight: 0.05

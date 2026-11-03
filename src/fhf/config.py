@@ -95,8 +95,23 @@ def validate_config(conf):
         raise ValueError("Flat classification loss requires residual fusion with both classifier heads")
     if active("family") and not heads["family"]:
         raise ValueError("Family loss requires family head")
+    contrastive = conf["losses"]["intra_contrastive"]
+    if contrastive.get("mode", "standard") not in ("standard", "prompt_aware"):
+        raise ValueError("Contrastive mode must be standard or prompt_aware")
+    if not float(contrastive.get("temperature", 0.12)) > 0:
+        raise ValueError("Contrastive temperature must be > 0")
+    if float(contrastive.get("hard_weight", 2.0)) < 1 or float(
+        contrastive.get("same_prompt_weight", 3.0)
+    ) < 1:
+        raise ValueError("Contrastive negative weights must be >= 1")
     if active("intra_contrastive") and not heads["projection"]:
         raise ValueError("Contrastive loss requires projection head")
+    if active("intra_contrastive") and contrastive.get("mode") == "prompt_aware":
+        train = conf["training"]
+        if int(train.get("samples_per_model", 2)) < 2:
+            raise ValueError("Prompt-aware sampling needs samples_per_model >= 2")
+        if int(train.get("models_per_family", 2)) < 1:
+            raise ValueError("Prompt-aware sampling needs models_per_family >= 1")
     pooling = conf["model"].get("pooling", "mean")
     if pooling not in ("mean", "attention"):
         raise ValueError("model.pooling must be mean or attention")

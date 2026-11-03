@@ -39,9 +39,17 @@ def grouped_split(df, validation_fraction=0.2, seed=42):
 
 class TextDataset(Dataset):
     """Tokenize paragraphs lazily; optionally attach exact model and family IDs."""
-    def __init__(self, df, tokenizer, max_length=384, style_config=None):
+    def __init__(self, df, tokenizer, max_length=384, style_config=None,
+                 include_prompt_id=False):
         self.df, self.tokenizer, self.max_length = df.reset_index(drop=True), tokenizer, max_length
         self.labels = [MODEL_TO_ID[x] for x in df.model] if 'model' in df else None
+        self.prompt_ids = None
+        if include_prompt_id:
+            if 'prompt_id' not in self.df or self.df.prompt_id.isna().any():
+                raise ValueError("Prompt-aware training requires nonempty prompt_id")
+            # The ids only need to agree *within the training split*.
+            # Factorization is deterministic and does not expose validation prompts.
+            self.prompt_ids = pd.factorize(self.df.prompt_id.astype(str), sort=False)[0].tolist()
         style_config = style_config or {}
         self.style_features = None
         if style_config.get("enabled", False):
@@ -58,6 +66,8 @@ class TextDataset(Dataset):
         item = self.tokenizer(str(self.df.iloc[i].text), truncation=True, max_length=self.max_length)
         if self.style_features is not None:
             item['style_features'] = self.style_features[i]
+        if self.prompt_ids is not None:
+            item['prompt_ids'] = int(self.prompt_ids[i])
         if self.labels is not None:
             item['labels'] = self.labels[i]
             item['families'] = MODEL_FAMILY_IDS[self.labels[i]]
@@ -70,7 +80,10 @@ def make_collator(tokenizer):
         labels = [x.pop('labels') for x in items] if 'labels' in items[0] else None
         families = [x.pop('families') for x in items] if 'families' in items[0] else None
         styles = [x.pop('style_features') for x in items] if 'style_features' in items[0] else None
+        prompt_ids = [x.pop('prompt_ids') for x in items] if 'prompt_ids' in items[0] else None
         batch = tokenizer.pad(items, padding=True, return_tensors='pt')
+        if prompt_ids is not None:
+            batch['prompt_ids'] = torch.tensor(prompt_ids, dtype=torch.long)
         if styles is not None:
             batch['style_features'] = torch.stack(styles)
         if labels is not None:
@@ -221,3 +234,116 @@ class FamilyBatchSampler(Sampler):
                                  for _ in range(self.spm))
             rng.shuffle(batch)
             yield batch
+
+
+class PromptAwareFamilyBatchSampler(FamilyBatchSampler):
+    """Preserve model-balanced slots while constructing prompt-aware pairs.
+
+    Given each base batch's chosen model slots, select text examples so that
+    two samples of the same model usually have *different* prompts, and when
+    feasible, different models in the batch share an anchor prompt. Where
+    every exact model answers the same prompts, both pair types are guaranteed.
+    """
+
+    def __init__(self, labels, prompt_ids, **kwargs):
+        if len(labels) != len(prompt_ids):
+            raise ValueError("labels and prompt_ids must have the same length")
+        super().__init__(labels, **kwargs)
+        self.labels = [int(v) for v in labels]
+        self.prompts_by_model = {}
+        self.prompt_ids = []
+        for idx, (model, prompt) in enumerate(zip(self.labels, prompt_ids)):
+            if pd.isna(prompt):
+                raise ValueError("prompt_ids must not contain missing values")
+            key = str(prompt)
+            self.prompt_ids.append(key)
+            self.prompts_by_model.setdefault(model, {}).setdefault(key, []).append(idx)
+        for model, prompts in self.prompts_by_model.items():
+            if len(prompts) < 2:
+                raise ValueError(
+                    f"Prompt-aware positives require >=2 distinct prompts per model; "
+                    f"class {model} has {len(prompts)}"
+                )
+        models = list(self.prompts_by_model)
+        if not any(
+            set(self.prompts_by_model[a]) & set(self.prompts_by_model[b])
+            for i, a in enumerate(models) for b in models[i + 1:]
+        ):
+            raise ValueError(
+                "Prompt-aware negatives require at least one shared prompt "
+                "between different models"
+            )
+
+    def __iter__(self):
+        rng = np.random.default_rng(
+            np.random.SeedSequence([self.seed, self.epoch, 0xF4F])
+        )
+        usage = {(m, p): 0 for m, prompts in self.prompts_by_model.items()
+                 for p in prompts}
+        # Shuffle all examples within each (model, prompt) bucket and cycle
+        # through them before reusing a response.
+        buckets = {(m, p): rng.permutation(indices).tolist()
+                   for m, prompts in self.prompts_by_model.items()
+                   for p, indices in prompts.items()}
+        cursors = {key: 0 for key in buckets}
+
+        def least_used(model, prompts):
+            prompts = sorted(prompts)
+            minimum = min(usage[(model, p)] for p in prompts)
+            best = [p for p in prompts if usage[(model, p)] == minimum]
+            return best[int(rng.integers(len(best)))]
+
+        def shared_prompt(models):
+            choices = set(self.prompts_by_model[models[0]])
+            for m in models[1:]:
+                choices.intersection_update(self.prompts_by_model[m])
+            if not choices:
+                return None
+            # Prefer prompts that have been used less often across these
+            # specific models, rather than repeatedly drawing popular prompts.
+            cost = {p: sum(usage[(m, p)] for m in models) for p in choices}
+            minimum = min(cost.values())
+            ties = sorted(p for p, score in cost.items() if score == minimum)
+            return ties[int(rng.integers(len(ties)))]
+
+        def draw_index(model, prompt):
+            key = (model, prompt)
+            if cursors[key] == len(buckets[key]):
+                buckets[key] = rng.permutation(
+                    self.prompts_by_model[model][prompt]
+                ).tolist()
+                cursors[key] = 0
+            idx = int(buckets[key][cursors[key]])
+            cursors[key] += 1
+            usage[key] += 1
+            return idx
+
+        for original_batch in super().__iter__():
+            slots = {}
+            for idx in original_batch:
+                model = self.labels[idx]
+                family = MODEL_FAMILY_IDS[model]
+                slots.setdefault(family, {}).setdefault(model, 0)
+                slots[family][model] += 1
+
+            all_models = [m for models in slots.values() for m in models]
+            anchor = shared_prompt(all_models)
+            result = []
+            for models in slots.values():
+                family_anchor = anchor if anchor is not None else shared_prompt(list(models))
+                for model, count in models.items():
+                    available = self.prompts_by_model[model]
+                    current_anchor = family_anchor
+                    if current_anchor is None or current_anchor not in available:
+                        current_anchor = least_used(model, available)
+                    used_prompts = {current_anchor}
+                    result.append(draw_index(model, current_anchor))
+                    for _ in range(count - 1):
+                        candidates = set(available) - used_prompts
+                        if not candidates:
+                            candidates = set(available) - {current_anchor}
+                        prompt = least_used(model, candidates)
+                        result.append(draw_index(model, prompt))
+                        used_prompts.add(prompt)
+            rng.shuffle(result)
+            yield result
