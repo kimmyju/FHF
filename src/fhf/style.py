@@ -58,7 +58,7 @@ def _style_scalars(text):
 class StyleFeatureExtractor:
     """Hash n-grams without fitting on train/validation data."""
 
-    def __init__(self, hash_dim=256):
+    def __init__(self, hash_dim=4096):
         self.hash_dim = int(hash_dim)
         if self.hash_dim < 16 or self.hash_dim & (self.hash_dim - 1):
             raise ValueError("style.hash_dim must be a power of two >= 16")

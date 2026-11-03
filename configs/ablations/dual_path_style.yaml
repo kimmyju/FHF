@@ -15,7 +15,7 @@ model:
   pooling: attention
   style:
     enabled: true
-    hash_dim: 256
+    hash_dim: 4096
     hidden_dim: 128
   residual_fusion:
     enabled: true

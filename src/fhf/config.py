@@ -104,7 +104,7 @@ def validate_config(conf):
     if type(style.get("enabled", False)) is not bool:
         raise ValueError("model.style.enabled must be true/false")
     if style.get("enabled", False):
-        dim = int(style.get("hash_dim", 256))
+        dim = int(style.get("hash_dim", 4096))
         if dim < 16 or dim & (dim - 1):
             raise ValueError("model.style.hash_dim must be a power of two >=16")
         if int(style.get("hidden_dim", 128)) < 1:

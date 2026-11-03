@@ -45,7 +45,7 @@ class TextDataset(Dataset):
         style_config = style_config or {}
         self.style_features = None
         if style_config.get("enabled", False):
-            extractor = StyleFeatureExtractor(style_config.get("hash_dim", 256))
+            extractor = StyleFeatureExtractor(style_config.get("hash_dim", 4096))
             # Materialize once, not repeatedly for each epoch.
             self.style_features = torch.from_numpy(
                 extractor.transform(self.df.text.astype(str).tolist())

@@ -76,7 +76,7 @@ class FingerprintModel(nn.Module):
         self.style_enabled = bool(self.style_config.get("enabled", False))
         self.style_fusion = None
         if self.style_enabled:
-            style_dim = StyleFeatureExtractor(self.style_config.get("hash_dim", 256)).dim
+            style_dim = StyleFeatureExtractor(self.style_config.get("hash_dim", 4096)).dim
             self.style_fusion = GatedStyleFusion(
                 style_dim, hidden, int(self.style_config.get("hidden_dim", 128)),
                 dropout=float(dropout),
