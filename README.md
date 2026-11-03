@@ -439,3 +439,64 @@ Outputs under `outputs/fusion-eval`:
 Selecting the best weight from the same validation data is exploratory:
 validate the chosen weight on an independent held-out set before claiming
 a generalization gain. Fusion may not improve on either standalone model.
+
+
+## Dual-path style-aware FHF with residual hierarchy (experimental)
+
+New opt-in architecture in `configs/ablations/dual_path_style.yaml`.
+This is **end-to-end training**, not the previous frozen BERT + TF-IDF
+probability average. Original FHF config files remain compatible and unchanged
+unless the new YAML is selected.
+
+Architecture:
+
+1. Context branch: ModernBERT-large + LoRA with learned padding-aware
+   attention pooling instead of masked mean pooling.
+2. Style branch: fit-free hashed character 3–5-gram counts plus 24 lexical,
+   punctuation, length, repetition, and formatting statistics extracted from
+   each **original** text. The small style MLP learns on training data only.
+   The hashed representation is distinct from the fitted TF-IDF baseline.
+3. Gated style fusion: learned residual style correction to context embeddings.
+4. Original **three heads** remain (Family 6-way, Model 18-way, Projection 128-d).
+   The Model Head produces within-family scores, while a new independent
+   **Flat 18-way Head** learns absolute model scores.
+5. Residual probability fusion combines hierarchical and flat predictions:
+   `P(final) = (1-flat_weight)*P(hierarchical) + flat_weight*P(flat)`.
+   Both the fused prediction and Flat Head have separate supervised losses.
+
+Run:
+
+```bash
+git pull
+python scripts/train.py --config configs/ablations/dual_path_style.yaml
+```
+
+Separate experiment output: `outputs/dual-path-style/`. The new YAML uses
+15 epochs, cosine LR, 4-epoch early stopping, the same training/validation
+prompt-disjoint splitting and seed 42 as `base.yaml`, and HotFlip disabled.
+The model logs `val/balanced_accuracy`, `val/oracle_within_family_accuracy`,
+`val/loss_flat`, `val/loss_hierarchical`, and `val/style_gate_mean`.
+
+To evaluate the best saved checkpoint without retraining:
+
+```bash
+python scripts/evaluate.py --config configs/ablations/dual_path_style.yaml
+```
+
+To generate a competition submission, point `scripts/predict.py` at the
+saved dual-path checkpoint, or use the same config and override
+`paths.test_csv` / `paths.submission_parquet` as needed.
+Original raw text must be available to regenerate the hashed style features.
+
+The checkpoint metadata stores `pooling`, `style`, and
+`residual_fusion` settings, and its `heads.pt` stores new Attention Pool,
+Style Fusion and Flat Head parameters. Older checkpoints load with the legacy
+mean-pooling path. A style-enabled checkpoint requires style features during
+inference, which the standard TextDataset + prediction scripts now supply.
+HotFlip with the style branch is explicitly blocked because token-only
+perturbations would leave the raw-text style features out of sync.
+
+**Research caveat:** this is an unvalidated structural hypothesis. Do not
+assume it will achieve BAcc 0.745, and keep the existing Flat and Hierarchical
+runs as baselines. This experiment retains the previous contrastive loss and
+sampler; prompt-aware contrastive training is *not* included here.

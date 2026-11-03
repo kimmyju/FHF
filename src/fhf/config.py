@@ -6,7 +6,7 @@ from pathlib import Path
 import yaml
 
 HEADS = ("family", "model", "projection")
-LOSSES = ("exact_classification", "family", "intra_contrastive", "rdrop", "hotflip")
+LOSSES = ("exact_classification", "flat_classification", "family", "intra_contrastive", "rdrop", "hotflip")
 
 
 def _merge(base, extra):
@@ -90,10 +90,34 @@ def validate_config(conf):
     active = lambda name: is_enabled(conf, name) and float(conf["losses"][name]["weight"]) > 0
     if active("exact_classification") and not heads["model"]:
         raise ValueError("Exact classification loss requires model head")
+    if active("flat_classification") and not (
+            heads["family"] and heads["model"] and conf["model"].get("residual_fusion", {}).get("enabled", False)):
+        raise ValueError("Flat classification loss requires residual fusion with both classifier heads")
     if active("family") and not heads["family"]:
         raise ValueError("Family loss requires family head")
     if active("intra_contrastive") and not heads["projection"]:
         raise ValueError("Contrastive loss requires projection head")
+    pooling = conf["model"].get("pooling", "mean")
+    if pooling not in ("mean", "attention"):
+        raise ValueError("model.pooling must be mean or attention")
+    style = conf["model"].get("style", {})
+    if type(style.get("enabled", False)) is not bool:
+        raise ValueError("model.style.enabled must be true/false")
+    if style.get("enabled", False):
+        dim = int(style.get("hash_dim", 256))
+        if dim < 16 or dim & (dim - 1):
+            raise ValueError("model.style.hash_dim must be a power of two >=16")
+        if int(style.get("hidden_dim", 128)) < 1:
+            raise ValueError("model.style.hidden_dim must be positive")
+    residual = conf["model"].get("residual_fusion", {})
+    if type(residual.get("enabled", False)) is not bool:
+        raise ValueError("model.residual_fusion.enabled must be true/false")
+    if not 0 <= float(residual.get("flat_weight", 0.5)) <= 1:
+        raise ValueError("model.residual_fusion.flat_weight must be in [0,1]")
+    if residual.get("enabled", False) and not (heads["family"] and heads["model"]):
+        raise ValueError("Residual fusion requires both family and model heads")
+    if active("hotflip") and style.get("enabled", False):
+        raise ValueError("Style-enabled HotFlip requires regenerating perturbed raw-text style features")
     if active("hotflip") and not heads["model"]:
         raise ValueError("HotFlip training currently requires the exact-model head")
     lora = conf["model"].get("lora", {"enabled": False})

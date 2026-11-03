@@ -46,9 +46,16 @@ def run_training(cfg):
         projection_dim=int(model_cfg["projection_dim"]),
         heads=model_cfg["heads"],
         lora=model_cfg.get("lora", {"enabled": False}),
+        pooling=model_cfg.get("pooling", "mean"),
+        style=model_cfg.get("style", {"enabled": False}),
+        residual_fusion=model_cfg.get("residual_fusion", {"enabled": False}),
     )
-    training_ds = TextDataset(train, tokenizer, int(model_cfg["max_length"]))
-    valid_ds = TextDataset(val, tokenizer, int(model_cfg["max_length"]))
+    training_ds = TextDataset(
+        train, tokenizer, int(model_cfg["max_length"]), style_config=model.style_config
+    )
+    valid_ds = TextDataset(
+        val, tokenizer, int(model_cfg["max_length"]), style_config=model.style_config
+    )
     collator = make_collator(tokenizer)
     sampler = FamilyBatchSampler(
         training_ds.labels,

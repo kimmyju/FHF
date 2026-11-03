@@ -106,6 +106,11 @@ class WandbTracker:
             payload["val/loss_exact"] = float(metrics["validation_exact_loss"])
         if metrics.get("validation_family_loss") is not None:
             payload["val/loss_family"] = float(metrics["validation_family_loss"])
+        if metrics.get("validation_flat_loss") is not None:
+            payload["val/loss_flat"] = float(metrics["validation_flat_loss"])
+            payload["val/loss_hierarchical"] = float(metrics["validation_hierarchical_loss"])
+        if metrics.get("style_gate_mean") is not None:
+            payload["val/style_gate_mean"] = float(metrics["style_gate_mean"])
         if self._wandb and model_has_version_head:
             labels = MODEL_NAMES
         else:

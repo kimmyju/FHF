@@ -34,6 +34,9 @@ def objective(outputs, labels, families, config):
     specs = config["losses"]
     if specs["exact_classification"]["enabled"] and specs["exact_classification"]["weight"] > 0:
         parts["exact_classification"] = F.nll_loss(outputs["log_probs"], labels)
+    flat = specs.get("flat_classification", {"enabled": False, "weight": 0.0})
+    if flat.get("enabled", False) and flat.get("weight", 0) > 0:
+        parts["flat_classification"] = F.nll_loss(outputs["flat_log_probs"], labels)
     if specs["family"]["enabled"] and specs["family"]["weight"] > 0:
         parts["family"] = F.cross_entropy(outputs["family_logits"], families)
     if specs["intra_contrastive"]["enabled"] and specs["intra_contrastive"]["weight"] > 0:

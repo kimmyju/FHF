@@ -23,7 +23,10 @@ def main():
         resolve_path(conf, "checkpoint_dir"), base_encoder_override=base_override)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model.to(device)
-    data = TextDataset(df, tokenizer, int(conf["model"]["max_length"]))
+    data = TextDataset(
+        df, tokenizer, int(conf["model"]["max_length"]),
+        style_config=model.style_config
+    )
     loader = DataLoader(data, batch_size=int(conf["inference"]["batch_size"]),
                         collate_fn=make_collator(tokenizer))
     prediction, target, oracle_prediction = predict(

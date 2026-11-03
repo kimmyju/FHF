@@ -239,6 +239,7 @@ def fit(model, tokenizer, train_loader, valid_loader, out_dir, config, device="c
                             metrics.get("family_balanced_accuracy"))
         # Compute validation losses in eval mode, so train/val curves are comparable.
         val_loss, val_cls, val_family, val_count = 0.0, 0.0, 0.0, 0
+        val_flat, val_hier, val_gate = 0.0, 0.0, 0.0
         model.eval()
         with torch.inference_mode():
             for vb in valid_loader:
@@ -251,12 +252,22 @@ def fit(model, tokenizer, train_loader, valid_loader, out_dir, config, device="c
                     val_cls += float(F.nll_loss(vo["log_probs"], y)) * n
                 if model.heads["family"]:
                     val_family += float(F.cross_entropy(vo["family_logits"], f)) * n
+                if "flat_log_probs" in vo:
+                    val_flat += float(F.nll_loss(vo["flat_log_probs"], y)) * n
+                    val_hier += float(F.nll_loss(vo["hierarchical_log_probs"], y)) * n
+                if "style_gate_mean" in vo:
+                    val_gate += float(vo["style_gate_mean"]) * n
                 val_count += n
         if model.heads["model"]:
             val_loss = val_cls / max(val_count, 1)
         else:
             val_loss = val_family / max(val_count, 1)
         metrics["validation_loss"] = val_loss
+        if model.residual_enabled:
+            metrics["validation_flat_loss"] = val_flat / max(val_count, 1)
+            metrics["validation_hierarchical_loss"] = val_hier / max(val_count, 1)
+        if model.style_enabled:
+            metrics["style_gate_mean"] = val_gate / max(val_count, 1)
         if model.heads["family"]:
             metrics["validation_family_loss"] = val_family / max(val_count, 1)
         metrics["validation_exact_loss"] = (

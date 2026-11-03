@@ -20,7 +20,9 @@ def submit(checkpoint, test_csv, output, batch_size=32, max_length=384,
         raise ValueError("A family-only checkpoint cannot submit 18-class predictions")
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model.to(device)
-    data = TextDataset(df, tokenizer, int(max_length))
+    data = TextDataset(
+        df, tokenizer, int(max_length), style_config=model.style_config
+    )
     loader = DataLoader(data, batch_size=int(batch_size), collate_fn=make_collator(tokenizer))
     predicted, _ = predict(model, loader, device)
     result = pd.DataFrame({"id": df.id, "model": [MODEL_NAMES[i] for i in predicted]})

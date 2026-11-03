@@ -6,6 +6,7 @@ import torch
 from sklearn.model_selection import GroupShuffleSplit
 from torch.utils.data import Dataset, Sampler
 from .labels import MODEL_TO_ID, MODEL_FAMILY_IDS, check_labels
+from .style import StyleFeatureExtractor
 
 
 def load_csv(path, labeled=True):
@@ -38,15 +39,25 @@ def grouped_split(df, validation_fraction=0.2, seed=42):
 
 class TextDataset(Dataset):
     """Tokenize paragraphs lazily; optionally attach exact model and family IDs."""
-    def __init__(self, df, tokenizer, max_length=384):
+    def __init__(self, df, tokenizer, max_length=384, style_config=None):
         self.df, self.tokenizer, self.max_length = df.reset_index(drop=True), tokenizer, max_length
         self.labels = [MODEL_TO_ID[x] for x in df.model] if 'model' in df else None
+        style_config = style_config or {}
+        self.style_features = None
+        if style_config.get("enabled", False):
+            extractor = StyleFeatureExtractor(style_config.get("hash_dim", 256))
+            # Materialize once, not repeatedly for each epoch.
+            self.style_features = torch.from_numpy(
+                extractor.transform(self.df.text.astype(str).tolist())
+            )
 
     def __len__(self):
         return len(self.df)
 
     def __getitem__(self, i):
         item = self.tokenizer(str(self.df.iloc[i].text), truncation=True, max_length=self.max_length)
+        if self.style_features is not None:
+            item['style_features'] = self.style_features[i]
         if self.labels is not None:
             item['labels'] = self.labels[i]
             item['families'] = MODEL_FAMILY_IDS[self.labels[i]]
@@ -58,7 +69,10 @@ def make_collator(tokenizer):
     def collate(items):
         labels = [x.pop('labels') for x in items] if 'labels' in items[0] else None
         families = [x.pop('families') for x in items] if 'families' in items[0] else None
+        styles = [x.pop('style_features') for x in items] if 'style_features' in items[0] else None
         batch = tokenizer.pad(items, padding=True, return_tensors='pt')
+        if styles is not None:
+            batch['style_features'] = torch.stack(styles)
         if labels is not None:
             batch['labels'] = torch.tensor(labels, dtype=torch.long)
             batch['families'] = torch.tensor(families, dtype=torch.long)

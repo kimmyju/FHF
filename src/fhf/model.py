@@ -15,6 +15,7 @@ import torch.nn.functional as F
 from transformers import AutoModel, AutoTokenizer
 
 from .labels import MODEL_NAMES, FAMILY_NAMES, MODEL_FAMILY_IDS
+from .style import StyleFeatureExtractor, MaskedAttentionPool, GatedStyleFusion
 
 
 DEFAULT_LORA = {
@@ -56,7 +57,8 @@ class FingerprintModel(nn.Module):
     """Hierarchical (provider/version), flat exact-model, or provider-only classifier."""
 
     def __init__(self, backbone, dropout=0.1, projection_dim=128,
-                 heads=None, lora=None, local_files_only=False, attach_adapter=True):
+                 heads=None, lora=None, local_files_only=False, attach_adapter=True,
+                 pooling="mean", style=None, residual_fusion=None):
         super().__init__()
         self.heads = dict(heads or {"family": True, "model": True, "projection": True})
         if not (self.heads.get("family") or self.heads.get("model")):
@@ -66,21 +68,50 @@ class FingerprintModel(nn.Module):
         base = AutoModel.from_pretrained(backbone, local_files_only=local_files_only)
         hidden = base.config.hidden_size
         self.encoder = apply_lora(base, self.lora) if self.lora["enabled"] and attach_adapter else base
+        self.pooling = str(pooling)
+        if self.pooling not in ("mean", "attention"):
+            raise ValueError("pooling must be mean or attention")
+        self.attention_pool = MaskedAttentionPool(hidden) if self.pooling == "attention" else None
+        self.style_config = dict(style or {"enabled": False})
+        self.style_enabled = bool(self.style_config.get("enabled", False))
+        self.style_fusion = None
+        if self.style_enabled:
+            style_dim = StyleFeatureExtractor(self.style_config.get("hash_dim", 256)).dim
+            self.style_fusion = GatedStyleFusion(
+                style_dim, hidden, int(self.style_config.get("hidden_dim", 128)),
+                dropout=float(dropout),
+            )
+        self.residual_config = dict(residual_fusion or {"enabled": False})
+        self.residual_enabled = bool(self.residual_config.get("enabled", False))
+        self.flat_weight = float(self.residual_config.get("flat_weight", 0.5))
+        if not 0 <= self.flat_weight <= 1:
+            raise ValueError("flat_weight must lie in [0,1]")
+        if self.residual_enabled and not (self.heads.get("model") and self.heads.get("family")):
+            raise ValueError("Residual fusion needs both family and model heads")
         self.dropout = nn.Dropout(dropout)
         self.projection = (nn.Sequential(nn.Linear(hidden, hidden), nn.GELU(),
                                         nn.Linear(hidden, projection_dim))
                            if self.heads.get("projection") else None)
         self.family_head = nn.Linear(hidden, len(FAMILY_NAMES)) if self.heads.get("family") else None
         self.model_head = nn.Linear(hidden, len(MODEL_NAMES)) if self.heads.get("model") else None
+        self.flat_head = nn.Linear(hidden, len(MODEL_NAMES)) if self.residual_enabled else None
         self.register_buffer("family_lookup", torch.tensor(MODEL_FAMILY_IDS, dtype=torch.long))
 
-    def forward(self, input_ids, attention_mask, **kwargs):
-        """Encode original text and compute a normalized exact-model distribution."""
+    def forward(self, input_ids, attention_mask, style_features=None, **kwargs):
+        """Encode text with optional style features and combine flat/hierarchical heads."""
         outputs = self.encoder(input_ids=input_ids, attention_mask=attention_mask, **kwargs)
-        weights = attention_mask.unsqueeze(-1)
-        pooled = (outputs.last_hidden_state * weights).sum(1) / weights.sum(1).clamp_min(1)
-        pooled = self.dropout(pooled)
+        if self.attention_pool is not None:
+            pooled = self.attention_pool(outputs.last_hidden_state, attention_mask)
+        else:
+            weights = attention_mask.unsqueeze(-1)
+            pooled = (outputs.last_hidden_state * weights).sum(1) / weights.sum(1).clamp_min(1)
         result = {}
+        if self.style_enabled:
+            if style_features is None:
+                raise ValueError("Style-enabled model requires raw-text style_features")
+            pooled, gate_mean = self.style_fusion(pooled, style_features)
+            result["style_gate_mean"] = gate_mean
+        pooled = self.dropout(pooled)
         if self.projection is not None:
             result["embeddings"] = F.normalize(self.projection(pooled), dim=-1)
         if self.family_head is not None:
@@ -101,6 +132,24 @@ class FingerprintModel(nn.Module):
                     family_log_probs = F.log_softmax(logits[:, indices], dim=-1)
                     local[:, indices] = family_log_probs.to(dtype=local.dtype)
                 result["log_probs"] = local + result["family_log_probs"][:, self.family_lookup]
+            if self.flat_head is not None:
+                flat_log = F.log_softmax(self.flat_head(pooled), dim=-1)
+                result["flat_log_probs"] = flat_log
+                result["hierarchical_log_probs"] = result["log_probs"]
+                # Mixture is computed in log space for numerical stability.
+                if self.flat_weight == 0.0:
+                    result["log_probs"] = result["hierarchical_log_probs"]
+                elif self.flat_weight == 1.0:
+                    result["log_probs"] = flat_log
+                else:
+                    result["log_probs"] = torch.logaddexp(
+                        result["hierarchical_log_probs"].float() + torch.log(
+                            flat_log.new_tensor(1.0 - self.flat_weight, dtype=torch.float32)
+                        ),
+                        flat_log.float() + torch.log(
+                            flat_log.new_tensor(self.flat_weight, dtype=torch.float32)
+                        ),
+                    )
         return result
 
     def trainable_parameters(self):
@@ -124,13 +173,18 @@ class FingerprintModel(nn.Module):
             "projection": self.projection.state_dict() if self.projection is not None else None,
             "family_head": self.family_head.state_dict() if self.family_head is not None else None,
             "model_head": self.model_head.state_dict() if self.model_head is not None else None,
+            "flat_head": self.flat_head.state_dict() if self.flat_head is not None else None,
+            "attention_pool": (self.attention_pool.state_dict() if self.attention_pool is not None else None),
+            "style_fusion": self.style_fusion.state_dict() if self.style_fusion is not None else None,
             "dropout": self.dropout.p,
             "projection_dim": self.projection[-1].out_features if self.projection is not None else None,
         }, path / "heads.pt")
         (path / "metadata.json").write_text(json.dumps({
             "format_version": 2, "models": MODEL_NAMES, "families": FAMILY_NAMES,
             "base_encoder": self.backbone_name, "lora": self.lora,
-            "heads": self.heads, "extra": extra or {},
+            "heads": self.heads, "pooling": self.pooling,
+            "style": self.style_config, "residual_fusion": self.residual_config,
+            "extra": extra or {},
         }, indent=2), encoding="utf-8")
 
     @classmethod
@@ -158,7 +212,10 @@ class FingerprintModel(nn.Module):
             model = cls(base, dropout=state["dropout"],
                         projection_dim=state["projection_dim"] or 128,
                         heads=state["heads"], lora=lora,
-                        local_files_only=True, attach_adapter=False)
+                        local_files_only=True, attach_adapter=False,
+                        pooling=meta.get("pooling", "mean"),
+                        style=meta.get("style", {"enabled": False}),
+                        residual_fusion=meta.get("residual_fusion", {"enabled": False}))
         except (OSError, FileNotFoundError) as error:
             raise FileNotFoundError(
                 "Cannot load frozen base encoder offline. Set "
@@ -169,7 +226,8 @@ class FingerprintModel(nn.Module):
             from peft import PeftModel
             model.encoder = PeftModel.from_pretrained(
                 model.encoder, str(path / "adapter"), is_trainable=False)
-        for name in ("projection", "family_head", "model_head"):
+        for name in ("projection", "family_head", "model_head",
+                     "flat_head", "attention_pool", "style_fusion"):
             module = getattr(model, name)
             if module is not None:
                 module.load_state_dict(state[name])

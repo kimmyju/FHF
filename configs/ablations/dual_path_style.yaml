@@ -1,0 +1,59 @@
+# Dual-path experiment. All defaults remain unchanged unless overridden here.
+# Keeps original 3-head FHF: family, exact-model, projection.
+extends: ../base.yaml
+experiment: fhf-dual-path-style-gated-residual
+paths:
+  checkpoint_dir: outputs/dual-path-style/checkpoint
+  validation_csv: outputs/dual-path-style/val.csv
+  train_split_csv: outputs/dual-path-style/train_split.csv
+  history_json: outputs/dual-path-style/history.json
+  config_snapshot: outputs/dual-path-style/config_resolved.yaml
+  eval_csv: outputs/dual-path-style/val.csv
+  eval_report: outputs/dual-path-style/evaluation.json
+
+model:
+  pooling: attention
+  style:
+    enabled: true
+    hash_dim: 256
+    hidden_dim: 128
+  residual_fusion:
+    enabled: true
+    flat_weight: 0.5
+
+losses:
+  # The fused prediction has the usual 18-class objective.
+  exact_classification:
+    enabled: true
+    weight: 1.0
+  # An independent flat branch needs its own loss to learn cross-family scores.
+  flat_classification:
+    enabled: true
+    weight: 0.30
+  family:
+    enabled: true
+    weight: 0.25
+  intra_contrastive:
+    enabled: true
+    weight: 0.25
+  rdrop:
+    enabled: true
+    weight: 0.05
+  hotflip:
+    enabled: false
+
+training:
+  epochs: 15
+  learning_rate: 0.0001
+  early_stopping:
+    enabled: true
+    patience: 4
+    min_delta: 0.001
+  scheduler:
+    name: cosine
+    warmup_ratio: 0.05
+    min_lr_ratio: 0.05
+
+wandb:
+  run_name: dual-path-style-gated-residual
+  tags: [modernbert, lora, dual-path, style, gated, residual, hierarchical]

@@ -23,7 +23,10 @@ def checkpoint_probabilities(model, tokenizer, validation, config, device):
     """Return class probabilities in fhf.labels.MODEL_NAMES order."""
     if not model.heads.get("model", False):
         raise ValueError("Fusion requires an 18-class Model Head checkpoint")
-    dataset = TextDataset(validation, tokenizer, int(config["model"]["max_length"]))
+    dataset = TextDataset(
+        validation, tokenizer, int(config["model"]["max_length"]),
+        style_config=model.style_config
+    )
     loader = DataLoader(
         dataset, batch_size=int(config["inference"]["batch_size"]),
         shuffle=False, collate_fn=make_collator(tokenizer)

@@ -26,6 +26,14 @@ model:
   max_length: 384
   dropout: 0.10
   projection_dim: 128
+  pooling: mean  # mean | attention
+  style:
+    enabled: false
+    hash_dim: 256
+    hidden_dim: 128
+  residual_fusion:
+    enabled: false
+    flat_weight: 0.5
   lora:
     enabled: true
     r: 16
@@ -44,6 +52,9 @@ losses:
   exact_classification:
     enabled: true
     weight: 1.0
+  flat_classification:
+    enabled: false
+    weight: 0.30
   family:
     enabled: true
     weight: 0.25

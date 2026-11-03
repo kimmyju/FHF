@@ -65,3 +65,24 @@ def test_modernbert_lora_defaults():
 def test_invalid_lora_rank():
     with pytest.raises(ValueError, match="LoRA r and alpha"):
         load_config(ROOT / "configs/base.yaml", ["model.lora.r=0"])
+
+
+def test_dual_path_preset_loads():
+    conf = load_config(ROOT / "configs/ablations/dual_path_style.yaml")
+    assert conf["model"]["pooling"] == "attention"
+    assert conf["model"]["style"]["enabled"] is True
+    assert conf["model"]["residual_fusion"]["enabled"] is True
+    assert conf["losses"]["flat_classification"]["enabled"] is True
+    assert conf["model"]["heads"] == {"family": True, "model": True, "projection": True}
+
+
+def test_flat_aux_loss_requires_residual_head():
+    with pytest.raises(ValueError, match="Flat classification loss"):
+        load_config(ROOT / "configs/base.yaml",
+                    ["losses.flat_classification.enabled=true"])
+
+
+def test_style_hotflip_incompatibility_is_explicit():
+    with pytest.raises(ValueError, match="regenerating perturbed"):
+        load_config(ROOT / "configs/ablations/dual_path_style.yaml",
+                    ["losses.hotflip.enabled=true"])
