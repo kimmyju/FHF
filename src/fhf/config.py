@@ -174,6 +174,26 @@ def validate_config(conf):
         raise ValueError("Scheduler min_lr_ratio must be in [0,1]")
     if type(conf["training"].get("log_epoch_metrics", True)) is not bool:
         raise ValueError("training.log_epoch_metrics must be true/false")
+    ext = conf.get("external_data", {"enabled": False})
+    if not isinstance(ext, dict) or type(ext.get("enabled", False)) is not bool:
+        raise ValueError("external_data.enabled must be true/false")
+    if ext.get("enabled", False):
+        for key in (
+            "external_source_path", "frozen_train_csv", "frozen_validation_csv",
+            "external_clean_csv", "external_audit_json",
+        ):
+            if not conf["paths"].get(key):
+                raise ValueError(f"External training requires paths.{key}")
+        if not isinstance(ext.get("columns", {}), dict):
+            raise ValueError("external_data.columns must be a mapping")
+        if not isinstance(ext.get("label_map", {}), dict):
+            raise ValueError("external_data.label_map must be a mapping")
+        for key in ("min_chars", "min_words", "min_accepted_rows",
+                    "min_multi_model_prompt_groups"):
+            if int(ext.get(key, 0)) < 0:
+                raise ValueError(f"external_data.{key} must be nonnegative")
+        if int(ext.get("min_accepted_rows", 1)) < 1:
+            raise ValueError("external_data.min_accepted_rows must be >=1")
 
 
 def resolve_path(conf, key):

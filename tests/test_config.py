@@ -98,3 +98,20 @@ def test_prompt_aware_preset_keeps_dual_path_settings():
     assert prompt["losses"]["intra_contrastive"]["weight"] == (
         control["losses"]["intra_contrastive"]["weight"]
     )
+
+
+def test_external_dataset_preset_is_opt_in_and_keeps_model():
+    ext = load_config(ROOT / "configs/ablations/dual_path_prompt_aware_ext.yaml")
+    base = load_config(ROOT / "configs/ablations/dual_path_prompt_aware.yaml")
+    assert ext["external_data"]["enabled"] is True
+    assert ext["model"] == base["model"]
+    assert ext["training"] == base["training"]
+    assert ext["losses"] == base["losses"]
+    assert ext["paths"]["checkpoint_dir"] != base["paths"]["checkpoint_dir"]
+    assert base.get("external_data", {}).get("enabled", False) is False
+
+
+def test_invalid_external_missing_paths_rejected():
+    with pytest.raises(ValueError, match="external_source_path"):
+        load_config(ROOT / "configs/ablations/dual_path_prompt_aware_ext.yaml",
+                    ["paths.external_source_path=null"])

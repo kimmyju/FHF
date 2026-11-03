@@ -1,0 +1,41 @@
+# Train-only external generation augmentation. Never repartitions the official data.
+extends: dual_path_prompt_aware.yaml
+experiment: fhf-prompt-aware-ntl-v2-external
+paths:
+  # Download/extract the Kaggle dataset here, or override with --set.
+  external_source_path: data/external/ntl_v2
+  # Immutable baseline produced by the ~0.398 prompt-aware experiment.
+  frozen_train_csv: outputs/dual-path-prompt-aware/train_split.csv
+  frozen_validation_csv: outputs/dual-path-prompt-aware/val.csv
+  external_clean_csv: outputs/dual-path-prompt-aware-ntl-v2/external_clean.csv
+  external_audit_json: outputs/dual-path-prompt-aware-ntl-v2/external_audit.json
+  checkpoint_dir: outputs/dual-path-prompt-aware-ntl-v2/checkpoint
+  validation_csv: outputs/dual-path-prompt-aware-ntl-v2/val.csv
+  train_split_csv: outputs/dual-path-prompt-aware-ntl-v2/train_split.csv
+  history_json: outputs/dual-path-prompt-aware-ntl-v2/history.json
+  config_snapshot: outputs/dual-path-prompt-aware-ntl-v2/config_resolved.yaml
+  eval_csv: outputs/dual-path-prompt-aware-ntl-v2/val.csv
+  eval_report: outputs/dual-path-prompt-aware-ntl-v2/evaluation.json
+
+external_data:
+  enabled: true
+  # Candidate raw column names auto-detected if unique; override ambiguous names.
+  columns:
+    text: null
+    model: null
+    prompt_id: null
+    prompt_text: null
+    id: null
+  # Add ONLY independently verified aliases of EXACT target versions.
+  label_map: {}
+  expected_train_rows: 2159
+  expected_validation_rows: 540
+  min_chars: 20
+  min_words: 5
+  max_per_model: null
+  min_accepted_rows: 1
+  min_multi_model_prompt_groups: 1
+
+wandb:
+  run_name: dual-path-prompt-aware-ntl-v2
+  tags: [modernbert, lora, prompt-aware, external-data, frozen-validation, ntl-v2]

@@ -15,9 +15,10 @@ from transformers import AutoTokenizer
 
 from fhf.config import load_config, resolve_path
 from fhf.data import (
-    load_csv, grouped_split, TextDataset, FamilyBatchSampler,
+    TextDataset, FamilyBatchSampler,
     PromptAwareFamilyBatchSampler, make_collator,
 )
+from fhf.external_data import training_frames, write_external_audit
 from fhf.engine import fit, seed_everything
 from fhf.model import FingerprintModel
 from fhf.tracking import WandbTracker
@@ -28,15 +29,18 @@ def run_training(cfg):
     seed_everything(int(cfg["seed"]))
     checkpoint_dir = resolve_path(cfg, "checkpoint_dir")
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    train, val = grouped_split(
-        load_csv(resolve_path(cfg, "train_csv")),
-        float(cfg["training"]["validation_fraction"]),
-        int(cfg["seed"]),
-    )
+    train, val, external, audit = training_frames(cfg)
     for key, frame in (("train_split_csv", train), ("validation_csv", val)):
         destination = resolve_path(cfg, key)
         destination.parent.mkdir(parents=True, exist_ok=True)
         frame.to_csv(destination, index=False)
+    if audit is not None:
+        write_external_audit(cfg, external, audit)
+        print(
+            f"External data: accepted {audit['accepted_external_rows']}/"
+            f"{audit['raw_rows']} samples; merged train={audit['merged_train_rows']}; "
+            f"frozen validation={audit['frozen_validation_rows']}"
+        )
     snapshot = resolve_path(cfg, "config_snapshot")
     snapshot.parent.mkdir(parents=True, exist_ok=True)
     snapshot.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")

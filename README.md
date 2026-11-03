@@ -551,3 +551,97 @@ the W&B pair-count metrics.
 Run the previous `dual_path_style.yaml` command as the control. Any
 improvement should be verified over multiple seeds, not attributed to
 prompt-aware loss alone on one prompt split. No performance gain is guaranteed.
+
+## Train-only external dataset augmentation (NTL same-prompt v2)
+
+The **opt-in** experiment `configs/ablations/dual_path_prompt_aware_ext.yaml`
+keeps the Dual-Path + Prompt-aware model/loss settings unchanged and trains
+from the existing ~0.398 experiment's **frozen** split, adding validated external
+generations to its TRAIN set only.
+
+### Prepare external data
+
+Download `arxitekton/ntl-claude-gen-v2` from Kaggle and **extract** exactly one
+`.csv`, `.parquet`, or `.jsonl` under `data/external/ntl_v2/`. The local
+`data/` tree is gitignored, so downloaded samples are not pushed to GitHub.
+If placed elsewhere or if there are multiple files, select the exact file using
+`--set paths.external_source_path=data/your-file.csv`.
+
+The Kaggle dataset's real column schema has **not** been verified by this
+repository. The loader detects unambiguous candidate columns (`text`,
+`response`, `completion`, `model`, `model_name`, `prompt_id`,
+`prompt`, etc.) and rejects missing or ambiguous mappings rather than
+guessing. An external prompt text field is preferred for identifying matched
+same-prompt generations. `prompt_id` alone is accepted only when it really
+identifies a shared question. Use `external_data.columns` to specify actual
+column names if auto-detection cannot determine them uniquely.
+
+Only exact names in the official 18-class label vocabulary are accepted.
+Other labels are reported and excluded. **Never map one model generation to a
+different version because its name looks similar.** For a verified spelling-only
+alias, configure `external_data.label_map` explicitly.
+
+### Run
+
+Keep these *existing* files from the original Prompt-aware run unchanged:
+
+```text
+outputs/dual-path-prompt-aware/train_split.csv
+outputs/dual-path-prompt-aware/val.csv
+```
+
+Then run a data-only preparation and quality report **before GPU training**:
+
+```bash
+git pull
+python scripts/prepare_external_data.py \
+  --config configs/ablations/dual_path_prompt_aware_ext.yaml
+```
+
+The check writes `outputs/dual-path-prompt-aware-ntl-v2/external_clean.csv`
+and `external_audit.json` plus the merged `train_split.csv` and unchanged
+`val.csv` under that new experiment folder. It prints model counts and each
+filter's exclusion counts. Review unknown model labels and rejected samples
+before training.
+
+When the report is satisfactory, run the **new** experiment:
+
+```bash
+python scripts/train.py --config configs/ablations/dual_path_prompt_aware_ext.yaml
+```
+
+This repeats the same checks and training merge before loading ModernBERT,
+then saves a new checkpoint and report in
+`outputs/dual-path-prompt-aware-ntl-v2/`.
+To evaluate:
+
+```bash
+python scripts/evaluate.py --config configs/ablations/dual_path_prompt_aware_ext.yaml
+```
+
+### Safety and correctness rules
+
+- Base Train and Val are read from the already-saved original files, not
+  re-split after augmentation. Default expected counts are **2,159** and
+  **540**; a mismatch stops the new experiment.
+- External IDs and prompt identifiers receive `ntl_v2_` prefixes. When
+  prompt text is available, normalized prompt text is SHA-256 hashed so
+  different responses to the exact same question share a prompt group.
+- Exact normalized response duplicates are removed against official Train
+  and Val, and internally. Conflicting output labels on identical normalized
+  responses cause the conflicting external examples to be removed.
+- Each accepted model label must match an exact competition target. Model
+  names, provenance, and label exclusions appear in `external_audit.json`.
+- If no matching 18-class label or no usable shared prompt groups remain,
+  stop before spending GPU time. The external raw format is not silently
+  assumed to be compatible.
+- Prompt-disjoint validation stays fixed. The content-level leakage checks
+  catch exact normalized response overlap, **not semantic near duplicates**.
+  Since original official prompts are anonymized, exact prompt equivalence
+  with hidden official prompts cannot be guaranteed; manually review source
+  provenance and any near-duplicate concerns.
+
+This uses the **same model initialization and hyperparameters**, with no
+automatic continuation from the 0.398 checkpoint. Keep the old run for
+a comparable ablation. Do not interpret an improvement as causal evidence
+without verifying external label authenticity, domain shift and repeated seeds.
