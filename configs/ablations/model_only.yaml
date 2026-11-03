@@ -1,0 +1,23 @@
+# Flat 18-class classification: no family head, no projection head.
+extends: ../base.yaml
+experiment: model-only
+paths:
+  checkpoint_dir: outputs/model-only
+  validation_csv: outputs/model-only/val.csv
+  train_split_csv: outputs/model-only/train_split.csv
+  history_json: outputs/model-only/history.json
+  config_snapshot: outputs/model-only/config_resolved.yaml
+  eval_csv: outputs/model-only/val.csv
+  eval_report: outputs/model-only/evaluation.json
+model:
+  heads:
+    family: false
+    model: true
+    projection: false
+losses:
+  family:
+    enabled: false
+  intra_contrastive:
+    enabled: false
+  rdrop:
+    enabled: false

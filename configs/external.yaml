@@ -1,0 +1,10 @@
+# External generator-labeled contrastive pretraining locations and hyperparameters.
+extends: base.yaml
+experiment: fhf-external-pretraining
+paths:
+  external_csv: data/external.csv
+  external_encoder_dir: outputs/fhf-external
+external_pretraining:
+  epochs: 2
+  batch_size: 32
+  learning_rate: 0.00002

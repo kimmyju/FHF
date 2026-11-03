@@ -1,0 +1,16 @@
+# Control: same ModernBERT-large backbone but update all encoder weights.
+extends: ../base.yaml
+experiment: modernbert-full-finetune
+paths:
+  checkpoint_dir: outputs/full-finetune
+  validation_csv: outputs/full-finetune/val.csv
+  train_split_csv: outputs/full-finetune/train_split.csv
+  history_json: outputs/full-finetune/history.json
+  config_snapshot: outputs/full-finetune/config_resolved.yaml
+  eval_csv: outputs/full-finetune/val.csv
+  eval_report: outputs/full-finetune/evaluation.json
+model:
+  lora:
+    enabled: false
+training:
+  learning_rate: 0.00002

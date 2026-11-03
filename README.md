@@ -131,7 +131,7 @@ Provide CSV columns `text,model` and optionally `provider`. Keep the actual gene
 python scripts/pretrain_external.py --config configs/external.yaml
 ```
 
-Then create another run YAML with `model.encoder: outputs/fhf-external/encoder` and `model.tokenizer: outputs/fhf-external/tokenizer`. Externally pretrained models can cause negative transfer, and the simple external-data loader does not yet enforce model-balanced minibatches.
+When LoRA is enabled, external pretraining saves `outputs/fhf-external/adapter` and `outputs/fhf-external/tokenizer` rather than a full copy of the base. To transfer the adapter into FHF, keep `model.encoder: answerdotai/ModernBERT-large` and set `model.lora.initial_adapter: outputs/fhf-external/adapter` plus `model.tokenizer: outputs/fhf-external/tokenizer` in your child YAML. The classifier heads are freshly initialized. Externally pretrained models can cause negative transfer, and the simple external-data loader does not yet enforce model-balanced minibatches.
 
 ## Evaluate and predict
 
