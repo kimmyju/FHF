@@ -83,3 +83,17 @@ external_pretraining:
   batch_size: 32
   learning_rate: 0.00002
   seed: 42
+
+# Training metrics: offline by default; change to online after wandb login.
+# No API keys or passwords belong in this YAML.
+wandb:
+  enabled: true
+  mode: offline
+  project: fhf-name-that-llm
+  entity: null
+  run_name: null
+  group: null
+  tags: [modernbert, lora, attribution]
+  dir: outputs/wandb
+  log_every_n_steps: 5
+  log_confusion_matrix: true

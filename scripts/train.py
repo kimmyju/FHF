@@ -1,7 +1,12 @@
-"""Run reproducible FHF training from an experiment YAML, including independent head ablations."""
+"""Train FHF from YAML; expose run_training for W&B sweep agents.
+
+All datasets, checkpoints, metrics and W&B metadata use the resolved YAML
+configuration. Do not store an API key in source code or experiment YAML.
+"""
+from __future__ import annotations
+
 import argparse
 import json
-from pathlib import Path
 
 import torch
 import yaml
@@ -12,22 +17,20 @@ from fhf.config import load_config, resolve_path
 from fhf.data import load_csv, grouped_split, TextDataset, FamilyBatchSampler, make_collator
 from fhf.engine import fit, seed_everything
 from fhf.model import FingerprintModel
+from fhf.tracking import WandbTracker
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", default="configs/base.yaml")
-    parser.add_argument("--set", action="append", default=[], metavar="SECTION.KEY=VALUE",
-                        help="Override any YAML field, e.g. model.heads.family=false")
-    args = parser.parse_args()
-    cfg = load_config(args.config, args.set)
+def run_training(cfg):
+    """Execute one reproducible experiment, logging to W&B when enabled."""
     seed_everything(int(cfg["seed"]))
-    train_csv = resolve_path(cfg, "train_csv")
     checkpoint_dir = resolve_path(cfg, "checkpoint_dir")
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    df = load_csv(train_csv)
-    train, val = grouped_split(df, float(cfg["training"]["validation_fraction"]), int(cfg["seed"]))
-    for key, frame in [("train_split_csv", train), ("validation_csv", val)]:
+    train, val = grouped_split(
+        load_csv(resolve_path(cfg, "train_csv")),
+        float(cfg["training"]["validation_fraction"]),
+        int(cfg["seed"]),
+    )
+    for key, frame in (("train_split_csv", train), ("validation_csv", val)):
         destination = resolve_path(cfg, key)
         destination.parent.mkdir(parents=True, exist_ok=True)
         frame.to_csv(destination, index=False)
@@ -37,27 +40,55 @@ def main():
 
     model_cfg, train_cfg = cfg["model"], cfg["training"]
     tokenizer = AutoTokenizer.from_pretrained(model_cfg["tokenizer"] or model_cfg["encoder"])
-    model = FingerprintModel(model_cfg["encoder"], dropout=float(model_cfg["dropout"]),
-                             projection_dim=int(model_cfg["projection_dim"]),
-                             heads=model_cfg["heads"], lora=model_cfg.get("lora", {"enabled": False}))
-    train_data = TextDataset(train, tokenizer, int(model_cfg["max_length"]))
-    valid_data = TextDataset(val, tokenizer, int(model_cfg["max_length"]))
+    model = FingerprintModel(
+        model_cfg["encoder"],
+        dropout=float(model_cfg["dropout"]),
+        projection_dim=int(model_cfg["projection_dim"]),
+        heads=model_cfg["heads"],
+        lora=model_cfg.get("lora", {"enabled": False}),
+    )
+    training_ds = TextDataset(train, tokenizer, int(model_cfg["max_length"]))
+    valid_ds = TextDataset(val, tokenizer, int(model_cfg["max_length"]))
     collator = make_collator(tokenizer)
     sampler = FamilyBatchSampler(
-        train_data.labels, batch_families=int(train_cfg["batch_families"]),
+        training_ds.labels,
+        batch_families=int(train_cfg["batch_families"]),
         models_per_family=int(train_cfg["models_per_family"]),
         samples_per_model=int(train_cfg["samples_per_model"]),
-        steps_per_epoch=train_cfg.get("steps_per_epoch"), seed=int(cfg["seed"]))
-    train_loader = DataLoader(train_data, batch_sampler=sampler, collate_fn=collator,
-                              num_workers=int(train_cfg["num_workers"]))
-    valid_loader = DataLoader(valid_data, batch_size=int(train_cfg["eval_batch_size"]),
-                              collate_fn=collator, num_workers=int(train_cfg["num_workers"]))
-    history = fit(model, tokenizer, train_loader, valid_loader, checkpoint_dir, cfg,
-                  device="cuda" if torch.cuda.is_available() else "cpu")
-    destination = resolve_path(cfg, "history_json")
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(json.dumps(history, indent=2), encoding="utf-8")
-    print(f"Experiment: {cfg['experiment']}, checkpoint: {checkpoint_dir}")
+        steps_per_epoch=train_cfg.get("steps_per_epoch"),
+        seed=int(cfg["seed"]),
+    )
+    train_loader = DataLoader(
+        training_ds, batch_sampler=sampler, collate_fn=collator,
+        num_workers=int(train_cfg["num_workers"]),
+    )
+    valid_loader = DataLoader(
+        valid_ds, batch_size=int(train_cfg["eval_batch_size"]),
+        collate_fn=collator, num_workers=int(train_cfg["num_workers"]),
+    )
+    tracker = WandbTracker(cfg)
+    try:
+        history = fit(
+            model, tokenizer, train_loader, valid_loader, checkpoint_dir, cfg,
+            device="cuda" if torch.cuda.is_available() else "cpu",
+            tracker=tracker,
+        )
+        destination = resolve_path(cfg, "history_json")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(json.dumps(history, indent=2), encoding="utf-8")
+        print(f"Experiment: {cfg['experiment']}, checkpoint: {checkpoint_dir}")
+        return history
+    finally:
+        tracker.finish()
+
+
+def main():
+    """Read CLI overrides and start one training run."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", default="configs/base.yaml")
+    parser.add_argument("--set", action="append", default=[], metavar="SECTION.KEY=VALUE")
+    args = parser.parse_args()
+    run_training(load_config(args.config, args.set))
 
 
 if __name__ == "__main__":

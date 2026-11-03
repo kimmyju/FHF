@@ -189,3 +189,78 @@ Code license: MIT. External checkpoints and datasets retain their own licenses.
 - Checkpoint: adapter-only unless `model.lora.bundle_base_encoder: true`. The frozen original base must be mounted independently for offline Kaggle inference; a missing local model raises a descriptive error.
 - All ablations inherit LoRA defaults, ensuring fair comparisons. Set `model.lora.enabled: false` in a new YAML to compare full fine-tuning.
 - **Validation required:** the project has no verified competition score or completed real ModernBERT-large training run. Run a minimal dry-run and memory benchmark on your actual GPU before scaling up.
+
+## W&B dashboards: Loss, Accuracy and Model Fingerprints
+
+FHF integrates [Weights & Biases](https://wandb.ai/) training/validation charts and optional hyperparameter sweeps. **Your API key never belongs in a repository file.**
+
+The standard `configs/base.yaml` enables W&B **offline mode** by default. Offline runs save local events under `outputs/wandb/` without credentials or Internet. To upload live metrics:
+
+```bash
+wandb login  # enter your API key interactively, or set WANDB_API_KEY externally
+python scripts/train.py --config configs/base.yaml --set wandb.mode=online
+```
+
+The following charts and summaries are logged:
+- `train/loss`, `train/loss_exact_classification`, `train/loss_family`, `train/loss_intra_contrastive`: individual training losses by optimizer step.
+- `train/accuracy`, `train/learning_rate`: minibatch accuracy and learning rate by optimizer step.
+- `val/loss`, `val/loss_exact`, `val/loss_family`: held-out validation loss by epoch.
+- `val/accuracy`, `val/balanced_accuracy`, `val/family_accuracy`, `val/within_family_accuracy`: exact model and family validation metrics.
+- `val/recall/<model_name>`: per-model recall on held-out prompts.
+- `val/confusion_matrix`: W&B confusion matrix for every epoch (disable with `wandb.log_confusion_matrix: false`).
+- `val/best_balanced_accuracy`: best observed held-out balanced accuracy so far, the sweep optimization target; `val/best_family_balanced_accuracy` for a family-only run.
+
+YAML config example:
+
+```yaml
+wandb:
+  enabled: true
+  mode: offline  # online after 'wandb login'
+  project: fhf-name-that-llm
+  entity: null  # optional W&B team or user account
+  run_name: null
+  group: null
+  tags: [modernbert, lora, attribution]
+  dir: outputs/wandb
+  log_every_n_steps: 5
+  log_confusion_matrix: true
+```
+
+To sync local history later (after `wandb login`):
+
+```bash
+wandb sync outputs/wandb/wandb/offline-run-*
+```
+
+### Hyperparameter sweeps
+
+All sweep-specific YAML files live under **[sweeps/](sweeps/)**, separate from ordinary configurations:
+
+```text
+sweeps/
+  lora_bayes.yaml        LoRA rank, alpha, dropout, LR, key loss weights
+  loss_grid.yaml         Controlled loss ablation matrix
+  model_only_bayes.yaml  Flat 18-class head sweep
+  family_only_bayes.yaml Six-provider head sweep
+  README.md              Sweep usage and safeguards
+```
+
+Start one sweep from the repository root:
+
+```bash
+wandb login
+wandb sweep sweeps/lora_bayes.yaml
+wandb agent YOUR_ENTITY/fhf-name-that-llm/SWEEP_ID
+```
+
+The sweep agent launches `scripts/sweep_train.py`. It applies W&B-provided dotted-key parameter overrides to the selected normal YAML config and saves every trial under a **unique `outputs/sweeps/<run_id>/` directory** to avoid overwriting checkpoints. The same validated prompt-group split is reused unless you change the seed.
+
+Sweeps run in **online** mode and require a connected W&B account. Restrict the number of trial agents according to available VRAM; concurrently loading multiple ModernBERT-large models can exhaust a GPU. Sweeps repeatedly select against the validation split, so report final performance on a genuinely separate held-out set. Sweep values and ranges are exploratory, not established best hyperparameters.
+
+To disable all W&B telemetry for one run:
+
+```bash
+python scripts/train.py --config configs/base.yaml --set wandb.enabled=false
+```
+
+Local `history.json` reports remain available regardless of W&B configuration.

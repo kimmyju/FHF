@@ -1,0 +1,25 @@
+# Flat-model-head baseline: tune LoRA parameters without family/contrastive losses.
+program: scripts/sweep_train.py
+name: fhf-model-only-bayes
+project: fhf-name-that-llm
+method: bayes
+metric:
+  name: val/best_balanced_accuracy
+  goal: maximize
+parameters:
+  training.learning_rate:
+    distribution: log_uniform_values
+    min: 0.00002
+    max: 0.0003
+  model.lora.r:
+    values: [8, 16, 32]
+  model.lora.alpha:
+    values: [16, 32, 64]
+  model.dropout:
+    values: [0.05, 0.1, 0.2]
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - --config
+  - configs/ablations/model_only.yaml

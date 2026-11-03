@@ -1,0 +1,22 @@
+# Controlled ablation grid over family and within-family contrastive losses.
+# All candidates share ModernBERT and LoRA; use identical seed and validation split.
+program: scripts/sweep_train.py
+name: fhf-loss-ablation-grid
+project: fhf-name-that-llm
+method: grid
+metric:
+  name: val/best_balanced_accuracy
+  goal: maximize
+parameters:
+  losses.family.weight:
+    values: [0.0, 0.25]
+  losses.intra_contrastive.weight:
+    values: [0.0, 0.25]
+  losses.rdrop.weight:
+    values: [0.0, 0.05]
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - --config
+  - configs/base.yaml

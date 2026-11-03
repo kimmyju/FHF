@@ -11,6 +11,7 @@ from torch.nn import functional as F
 from .losses import objective, symmetric_kl
 from .hotflip import hotflip_batch
 from .metrics import report
+from .tracking import WandbTracker
 
 
 def seed_everything(seed):
@@ -76,9 +77,10 @@ def _precision(device, setting):
     raise ValueError(f"Unsupported mixed precision mode: {setting}")
 
 
-def fit(model, tokenizer, train_loader, valid_loader, out_dir, config, device="cpu"):
+def fit(model, tokenizer, train_loader, valid_loader, out_dir, config, device="cpu", tracker=None):
     """Train adapter and heads with weighted losses; retain best prompt-disjoint checkpoint."""
     settings, losses = config["training"], config["losses"]
+    tracker = tracker or WandbTracker({"wandb": {"enabled": False}})
     trainable = [parameter for parameter in model.parameters() if parameter.requires_grad]
     if not trainable:
         raise ValueError("No trainable model parameters")
@@ -98,6 +100,7 @@ def fit(model, tokenizer, train_loader, valid_loader, out_dir, config, device="c
     print(f"Trainable parameters: {trainable_params:,}/{total_params:,}"
           f" ({100 * trainable_params / max(total_params,1):.2f}%)")
     best, history = -float("inf"), []
+    optimizer_steps = 0
     for epoch in range(int(settings["epochs"])):
         model.train()
         optimizer.zero_grad(set_to_none=True)
@@ -112,7 +115,7 @@ def fit(model, tokenizer, train_loader, valid_loader, out_dir, config, device="c
                         if precision is not None else nullcontext())
             with autocast:
                 out = model(**batch)
-                loss, _ = objective(out, labels, families, config)
+                loss, components = objective(out, labels, families, config)
                 if losses["rdrop"]["enabled"] and losses["rdrop"]["weight"] > 0:
                     second = model(**batch)
                     key = "log_probs" if model.heads["model"] else "family_log_probs"
@@ -127,6 +130,11 @@ def fit(model, tokenizer, train_loader, valid_loader, out_dir, config, device="c
                         key = "log_probs" if model.heads["model"] else "family_log_probs"
                         loss = loss + float(losses["hotflip"]["weight"]) * F.kl_div(
                             modified[key], out[key].detach().exp(), reduction="batchmean")
+            raw_loss = float(loss.detach())
+            batch_accuracy = float((
+                out["log_probs"] if model.heads["model"] else out["family_log_probs"]
+            ).argmax(dim=-1).eq(labels if model.heads["model"] else families)
+            .float().mean().detach())
             scaler.scale(loss / divisor).backward()
             if (step + 1) % accumulation == 0 or step + 1 == len(train_loader):
                 scaler.unscale_(optimizer)
@@ -134,20 +142,61 @@ def fit(model, tokenizer, train_loader, valid_loader, out_dir, config, device="c
                 scaler.step(optimizer)
                 scaler.update()
                 optimizer.zero_grad(set_to_none=True)
-            total += float(loss.detach())
+                optimizer_steps += 1
+                if optimizer_steps % int(config.get("wandb", {}).get("log_every_n_steps", 1)) == 0:
+                    tracker.train_step(optimizer_steps, {
+                        "train/loss": raw_loss,
+                        "train/accuracy": batch_accuracy,
+                        "train/learning_rate": optimizer.param_groups[0]["lr"],
+                        **{f"train/loss_{key}": float(value)
+                           for key, value in components.items()},
+                    })
+            total += raw_loss
             count += 1
         preds, truth = predict(model, valid_loader, device)
         metrics = _evaluate(preds, truth, model)
         score = metrics.get("balanced_accuracy_observed_classes",
                             metrics.get("family_balanced_accuracy"))
+        # Compute validation losses in eval mode, so train/val curves are comparable.
+        val_loss, val_cls, val_family, val_count = 0.0, 0.0, 0.0, 0
+        model.eval()
+        with torch.inference_mode():
+            for vb in valid_loader:
+                vb = {key: value.to(device) for key, value in vb.items()}
+                y = vb.pop("labels")
+                f = vb.pop("families")
+                vo = model(**vb)
+                n = len(y)
+                if model.heads["model"]:
+                    val_cls += float(F.nll_loss(vo["log_probs"], y)) * n
+                if model.heads["family"]:
+                    val_family += float(F.cross_entropy(vo["family_logits"], f)) * n
+                val_count += n
+        if model.heads["model"]:
+            val_loss = val_cls / max(val_count, 1)
+        else:
+            val_loss = val_family / max(val_count, 1)
+        metrics["validation_loss"] = val_loss
+        if model.heads["family"]:
+            metrics["validation_family_loss"] = val_family / max(val_count, 1)
+        metrics["validation_exact_loss"] = (
+            val_cls / max(val_count, 1) if model.heads["model"] else None
+        )
+        tracker.validation(epoch + 1, metrics, preds, truth, model.heads["model"])
         history.append({
             "epoch": epoch + 1, "training_loss": total / max(count, 1),
             "metrics": metrics, "trainable_parameters": trainable_params,
         })
         print(f"Epoch {epoch+1}: loss={total/max(count,1):.4f}; "
               f"val balanced accuracy={score:.4f}")
-        if score > best:
+        improved = score > best
+        if improved:
             best = score
+            tracker.best(epoch + 1,
+                         "balanced_accuracy" if model.heads["model"] else "family_balanced_accuracy",
+                         score)
+        tracker.best_score(epoch + 1, best, model.heads["model"])
+        if improved:
             model.save_checkpoint(out_dir, tokenizer, extra={
                 "best_epoch": epoch + 1,
                 "validation_balanced_accuracy": score,
