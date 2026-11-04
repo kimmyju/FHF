@@ -89,3 +89,39 @@ def combine(neural, lexical, lexical_weights, neural_weight=0.7):
             raise ValueError("No neural models: set neural_weight=0")
         mixed=combined_lexical
     return validate_probability_matrix(mixed,"fused")
+
+
+
+def select_neural_weight(lexical_oof, neural_oof, official_train,
+                         lexical_weights, step=0.05):
+    """Choose neural-vs-lexical blend solely from aligned official TRAIN OOF.
+
+    Score on this same OOF is optimistically tuned; do not report it as an
+    unbiased estimate. Confirmation must use a separate frozen validation.
+    """
+    true, lexical = read_lexical_oof(lexical_oof, official_train)
+    if neural_oof.id.astype(str).duplicated().any():
+        raise ValueError("Duplicate neural OOF IDs")
+    if set(neural_oof.id.astype(str)) != set(lexical_oof.id.astype(str)):
+        raise ValueError("Neural OOF must cover the same official TRAIN IDs")
+    neural = neural_oof.assign(id=neural_oof.id.astype(str)).set_index("id")
+    aligned = neural.loc[lexical_oof.id.astype(str)]
+    if not np.array_equal(aligned.true_model.to_numpy(),
+                          lexical_oof.true_model.to_numpy()):
+        raise ValueError("Neural/lexical OOF labels disagree")
+    columns = [f"neural_prob_{name}" for name in MODEL_NAMES]
+    if not set(columns).issubset(aligned):
+        raise ValueError("Neural OOF lacks 18-class probabilities")
+    probabilities = validate_probability_matrix(
+        aligned[columns].to_numpy(dtype=float), "neural_oof")
+    resolution = round(1/step)
+    if not 0<step<=1 or not np.isclose(step*resolution,1):
+        raise ValueError("Step must divide one exactly")
+    best=(-1.0, 0.0)
+    for i in range(resolution+1):
+        weight=i/resolution
+        result=combine([probabilities],lexical,lexical_weights,weight)
+        score=report(true,result.argmax(1))["balanced_accuracy_observed_classes"]
+        if score>best[0]:
+            best=(score,weight)
+    return best[1],best[0]

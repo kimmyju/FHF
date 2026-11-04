@@ -20,7 +20,7 @@ from fhf.data import TextDataset, load_csv, make_collator
 from fhf.model import FingerprintModel
 from fhf.labels import MODEL_NAMES, MODEL_TO_ID
 from fhf.metrics import report
-from fhf.v2_ensemble import select_lexical_weights, combine
+from fhf.v2_ensemble import select_lexical_weights, select_neural_weight, combine
 
 
 def neural_probs(checkpoint, frame, batch_size=16, max_length=384,
@@ -51,7 +51,7 @@ def neural_probs(checkpoint, frame, batch_size=16, max_length=384,
 
 def run(mode, data, official_train, oof_file, classical_model, checkpoints,
         output, neural_weight=0.70, batch_size=16, max_length=384,
-        base_encoder_override=None):
+        base_encoder_override=None, neural_oof_file=None):
     if mode not in ("validation","test"):
         raise ValueError("mode must be validation or test")
     if not len(data) or data.id.astype(str).duplicated().any():
@@ -60,12 +60,20 @@ def run(mode, data, official_train, oof_file, classical_model, checkpoints,
         raise ValueError("Validation requires ground-truth labels")
     if mode=="test" and "model" in data:
         raise ValueError("Test submission must be unlabeled")
+    oof=pd.read_csv(oof_file,dtype={"id":str,"prompt_id":str})
+    weights,oof_bacc=select_lexical_weights(oof,official_train)
+    selected_neural_oof_bacc=None
+    if isinstance(neural_weight,str) and neural_weight=="auto":
+        if not neural_oof_file or len(checkpoints)!=1:
+            raise ValueError("--neural-weight auto needs --neural-oof and exactly one checkpoint")
+        neural_oof=pd.read_csv(neural_oof_file,dtype={"id":str})
+        neural_weight,selected_neural_oof_bacc=select_neural_weight(
+            oof,neural_oof,official_train,weights)
+    neural_weight=float(neural_weight)
     if not 0<=neural_weight<=1:
         raise ValueError("neural_weight outside [0,1]")
     if not checkpoints and neural_weight>0:
         raise ValueError("Need neural checkpoints or --neural-weight 0")
-    oof=pd.read_csv(oof_file,dtype={"id":str,"prompt_id":str})
-    weights,oof_bacc=select_lexical_weights(oof,official_train)
     lexical=joblib.load(classical_model)
     component=lexical.predict_probabilities(data.text.astype(str).tolist())
     neural=[neural_probs(p,data,batch_size,max_length,base_encoder_override)
@@ -91,6 +99,7 @@ def run(mode, data, official_train, oof_file, classical_model, checkpoints,
         "num_neural_models":len(checkpoints),
         "lexical_weights_selected_on_train_oof":weights,
         "lexical_oof_bacc":oof_bacc,
+        "neural_mixture_tuned_oof_bacc":selected_neural_oof_bacc,
         "note":"The held-out validation was never used to select weights."
     }
     if mode=="validation":
@@ -112,7 +121,9 @@ def main():
     p.add_argument("--oof",default="outputs/fingerprint-v2/classical/oof_predictions.csv")
     p.add_argument("--classical",default="outputs/fingerprint-v2/classical/lexical_specialists.joblib")
     p.add_argument("--checkpoint",action="append",default=[])
-    p.add_argument("--neural-weight",type=float,default=0.7)
+    p.add_argument("--neural-weight",default="0.7",
+                   help="Fixed 0..1 or auto with --neural-oof")
+    p.add_argument("--neural-oof",default=None)
     p.add_argument("--batch-size",type=int,default=16)
     p.add_argument("--max-length",type=int,default=384)
     p.add_argument("--base-encoder-override",default=None)
@@ -124,7 +135,7 @@ def main():
                         if a.mode=="validation" else "outputs/fingerprint-v2/ensemble/submission.parquet")
     run(a.mode, load_csv(path,labeled=a.mode=="validation"),load_csv(a.train),
         a.oof,a.classical,a.checkpoint,output,a.neural_weight,
-        a.batch_size,a.max_length,a.base_encoder_override)
+        a.batch_size,a.max_length,a.base_encoder_override,a.neural_oof)
 
 
 if __name__=="__main__":
