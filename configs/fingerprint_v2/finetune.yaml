@@ -3,7 +3,7 @@ extends: ../ablations/dual_path_within_family_style_perturb.yaml
 experiment: fingerprint-v2-finetune
 paths:
   initial_checkpoint: outputs/fingerprint-v2/pretrain/checkpoint
-  # Optional after OOF: hard_pair_weights_json: outputs/fingerprint-v2/hard_pairs.json
+  hard_pair_weights_json: outputs/fingerprint-v2/hard_pairs.json
   frozen_train_csv: outputs/dual-path-prompt-aware/train_split.csv
   frozen_validation_csv: outputs/dual-path-prompt-aware/val.csv
   train_split_csv: outputs/fingerprint-v2/finetune/train.csv
