@@ -1,3 +1,5 @@
+**New research pipeline:** [Fingerprint V2 guide](docs/fingerprint_v2.md). The original C/E1 experiments are preserved.
+
 # FHF: Fine-grained Hierarchical Fingerprinting
 
 Config-driven research implementation for the [Name That LLM](https://www.kaggle.com/competitions/name-that-llm) competition. This is an **experimental pipeline**, not a trained model or a verified Kaggle leaderboard result.
