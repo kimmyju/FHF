@@ -21,5 +21,7 @@ def test_neural_oof_weight_grid():
             [0.9 if j==i else 0.1/17 for j in range(18)])
     w,score=select_neural_weight(lexical,neural,train,
                                 {"char":0,"word":0,"specialist":1},step=0.5)
-    assert w==1
-    assert score==1
+    # The first optimum can be 0.5: with a uniform lexical model,
+    # a 0.5 neural mixture already predicts every class correctly.
+    assert 0.5 <= w <= 1.0
+    assert score == 1.0
