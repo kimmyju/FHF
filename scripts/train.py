@@ -20,6 +20,7 @@ from fhf.data import (
 )
 from fhf.external_data import training_frames, write_external_audit
 from fhf.full_coverage import FullCoveragePromptFamilyBatchSampler
+from fhf.prompt_match import PromptMatchedFullCoverageBatchSampler
 from fhf.engine import fit, seed_everything
 from fhf.model import FingerprintModel
 from fhf.tracking import WandbTracker
@@ -90,10 +91,12 @@ def run_training(cfg):
     )
     collator = make_collator(tokenizer)
     sampler_mode = train_cfg.get("sampler", "balanced")
-    if sampler_mode == "full_coverage":
+    if sampler_mode in ("full_coverage", "prompt_matched_full_coverage"):
         if not prompt_aware:
-            raise ValueError("full_coverage requires prompt-aware labels")
-        sampler_cls = FullCoveragePromptFamilyBatchSampler
+            raise ValueError("Full coverage requires prompt-aware labels")
+        sampler_cls = (PromptMatchedFullCoverageBatchSampler
+                       if sampler_mode == "prompt_matched_full_coverage"
+                       else FullCoveragePromptFamilyBatchSampler)
     elif sampler_mode == "balanced":
         sampler_cls = PromptAwareFamilyBatchSampler if prompt_aware else FamilyBatchSampler
     else:
