@@ -18,6 +18,16 @@ class PromptMatchedFullCoverageBatchSampler(FullCoveragePromptFamilyBatchSampler
         by_model_prompt = defaultdict(list)
         for idx, (model, prompt) in enumerate(zip(self.labels, self.prompts)):
             by_model_prompt[(model, prompt)].append(idx)
+        def same_prompt_pair_count(batch):
+            total = 0
+            for slot, a in enumerate(batch):
+                for b in batch[slot + 1:]:
+                    if (self.labels[a] != self.labels[b]
+                            and MODEL_FAMILY_IDS[self.labels[a]] == MODEL_FAMILY_IDS[self.labels[b]]
+                            and self.prompts[a] == self.prompts[b]):
+                        total += 1
+            return total
+
         swaps = 0
         for bidx, batch in enumerate(batches):
             models_by_family = defaultdict(set)
@@ -47,8 +57,18 @@ class PromptMatchedFullCoverageBatchSampler(FullCoveragePromptFamilyBatchSampler
                         continue
                     candidate, other_batch, other_slot = match
                     evicted = batch[target_slot]
+                    before = (same_prompt_pair_count(batch)
+                              + same_prompt_pair_count(batches[other_batch]))
                     batch[target_slot] = candidate
                     batches[other_batch][other_slot] = evicted
+                    after = (same_prompt_pair_count(batch)
+                             + same_prompt_pair_count(batches[other_batch]))
+                    if after < before:
+                        # Never destroy more same-prompt pairs in a donor batch
+                        # than the proposed swap adds to the target batch.
+                        batch[target_slot] = evicted
+                        batches[other_batch][other_slot] = candidate
+                        continue
                     position[candidate] = (bidx, target_slot)
                     position[evicted] = (other_batch, other_slot)
                     swaps += 1

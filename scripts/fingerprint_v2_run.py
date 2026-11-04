@@ -18,8 +18,8 @@ DEFAULT=("select", "classical", "hard", "pretrain", "finetune", "ensemble")
 
 
 def commands(python, include_deberta=False, batch_size=32):
-    if batch_size not in (8,16,32,64):
-        raise ValueError("batch_size must be 8, 16, 32 or 64")
+    if batch_size not in (16,32,64):
+        raise ValueError("batch_size must be 16, 32 or 64")
     # Family batch composition remains 4 families x 2 models x SPM;
     # hardware-specific DeBERTa defaults to its own smaller configuration.
     spm=batch_size//8
