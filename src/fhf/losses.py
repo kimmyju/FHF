@@ -1,6 +1,7 @@
 """Switchable exact-class, family, hard-negative contrastive and KL consistency losses."""
 import torch
 import torch.nn.functional as F
+from .labels import MODEL_NAMES, MODEL_TO_ID, MODEL_TO_FAMILY
 
 
 def contrastive_loss(embeddings, labels, families, temperature=0.12, hard_weight=2.0):
@@ -84,7 +85,7 @@ def prompt_aware_contrastive_loss(embeddings, labels, families, prompt_ids,
 
 def within_family_prompt_contrastive_loss(
     embeddings, labels, families, prompt_ids,
-    temperature=0.12, same_prompt_weight=3.0,
+    temperature=0.12, same_prompt_weight=3.0, hard_pair_weights=None,
 ):
     """Contrast only among distinct exact models belonging to the same family.
 
@@ -122,6 +123,24 @@ def within_family_prompt_contrastive_loss(
             same_prompt_weight, dtype=torch.float32
         )))
     )
+    if hard_pair_weights:
+        # Optional hard model-pair confusion weights, computed strictly from
+        # official TRAIN out-of-fold predictions (never held-out validation).
+        pair_weight = torch.ones(
+            (len(MODEL_NAMES), len(MODEL_NAMES)), dtype=torch.float32,
+            device=sim.device)
+        for model_a, targets in hard_pair_weights.items():
+            if model_a not in MODEL_TO_ID or not isinstance(targets, dict):
+                raise ValueError(f"Unknown or malformed hard-pair source: {model_a}")
+            for model_b, scale in targets.items():
+                if model_b not in MODEL_TO_ID or MODEL_TO_FAMILY[model_a] != MODEL_TO_FAMILY[model_b]:
+                    raise ValueError("Hard pairs must use two models in the same provider")
+                if not 1 <= float(scale) <= 10:
+                    raise ValueError("Hard-pair weights must lie in [1,10]")
+                pair_weight[MODEL_TO_ID[model_a], MODEL_TO_ID[model_b]] = float(scale)
+        log_weights = log_weights + pair_weight[
+            labels[:, None], labels[None, :]].log() * negatives
+
     denominator = torch.logsumexp(
         (sim + log_weights).masked_fill(~allowed, -float("inf")),
         dim=1,
@@ -172,6 +191,7 @@ def objective(outputs, labels, families, config, prompt_ids=None):
                 outputs["embeddings"], labels, families, prompt_ids,
                 temperature=float(spec["temperature"]),
                 same_prompt_weight=float(spec.get("same_prompt_weight", 3.0)),
+                hard_pair_weights=spec.get("hard_pair_weights"),
             )
         elif spec.get("mode", "standard") == "prompt_aware":
             parts["intra_contrastive"] = prompt_aware_contrastive_loss(

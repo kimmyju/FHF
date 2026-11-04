@@ -29,6 +29,13 @@ from fhf.tracking import WandbTracker
 def run_training(cfg):
     """Execute one reproducible experiment, logging to W&B when enabled."""
     seed_everything(int(cfg["seed"]))
+    hard_path = cfg["paths"].get("hard_pair_weights_json")
+    if hard_path:
+        weights = json.loads(resolve_path(cfg, "hard_pair_weights_json").read_text(encoding="utf-8"))
+        if not isinstance(weights, dict):
+            raise ValueError("Hard-pair weights must be a JSON model-name mapping")
+        cfg["losses"]["intra_contrastive"]["hard_pair_weights"] = weights
+        print(f"Loaded OOF-derived confusion weights from {hard_path}")
     checkpoint_dir = resolve_path(cfg, "checkpoint_dir")
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     train, val, external, audit = training_frames(cfg)
