@@ -1,10 +1,12 @@
 """Deterministic source-balanced, model-balanced E1 curation."""
 import importlib.util
+import sys
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 spec=importlib.util.spec_from_file_location(
     "select_open_pool_e1",
     Path(__file__).resolve().parents[1] / "scripts/select_open_pool_e1.py",
