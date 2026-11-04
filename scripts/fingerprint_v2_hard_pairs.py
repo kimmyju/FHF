@@ -34,12 +34,14 @@ def derive(train, oof, field="specialist_pred_model", strength=8.0):
         raise ValueError("strength must be nonnegative")
     errors=pd.crosstab(aligned.true_model,aligned[field]).reindex(
         index=MODEL_NAMES,columns=MODEL_NAMES,fill_value=0)
-    counts=pd.Series(truth).value_counts()
+    counts=pd.Series(truth).value_counts().reindex(MODEL_NAMES,fill_value=0)
     weights={}
     for a in MODEL_NAMES:
         row={}
         for b in MODEL_NAMES:
             if a==b or MODEL_TO_FAMILY[a]!=MODEL_TO_FAMILY[b]:
+                continue
+            if counts[a]==0 or counts[b]==0:
                 continue
             symmetric=(errors.loc[a,b]/counts[a]+errors.loc[b,a]/counts[b])/2
             value=round(float(min(3.0,1.0+strength*symmetric)),4)
