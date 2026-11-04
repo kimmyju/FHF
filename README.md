@@ -699,3 +699,22 @@ Compare BAcc and family/within-family metrics to
 `dual_path_prompt_aware.yaml` on the exact same prompt-disjoint validation
 split. The model is retrained from initialization; no accuracy improvement
 is assumed.
+
+## C: Within-family Contrastive + Style-space perturbation
+
+Run both together, without modifying B's saved checkpoint:
+
+```bash
+git pull
+python scripts/train.py --config configs/ablations/dual_path_within_family_style_perturb.yaml
+python scripts/evaluate.py --config configs/ablations/dual_path_within_family_style_perturb.yaml
+```
+
+C keeps B's exact model, sampler, within-family contrastive loss, data and
+hyperparameters, adding a **second noisy style forward** during training.
+Gaussian noise N(0, 0.05²) is added **after the Style Encoder and before
+the Gated Fusion**, not to text or the pretrained Encoder tokens.
+KL(clean detached || noisy) receives weight 0.10, logged as
+`train/loss_style_perturbation`. Existing R-Drop remains separate. Noise
+is disabled in evaluation/inference. The extra pass increases training cost.
+Use the same prompt-disjoint validation and compare C to B and baseline.

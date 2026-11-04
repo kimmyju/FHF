@@ -188,6 +188,18 @@ def fit(model, tokenizer, train_loader, valid_loader, out_dir, config, device="c
                 loss, components = objective(
                     out, labels, families, config, prompt_ids=prompt_ids
                 )
+                perturb = config.get("style_perturbation", {})
+                if perturb.get("enabled", False) and float(perturb.get("weight", 0)) > 0:
+                    noisy = model(**batch, style_noise_std=float(perturb["sigma"]))
+                    key = "log_probs" if model.heads["model"] else "family_log_probs"
+                    # Stop-gradient clean target: only perturbation view is
+                    # regularized, without changing eval-time model behavior.
+                    consistency = F.kl_div(
+                        noisy[key].float(), out[key].detach().float().exp(),
+                        reduction="batchmean",
+                    )
+                    components["style_perturbation"] = consistency.detach()
+                    loss = loss + float(perturb["weight"]) * consistency
                 if losses["rdrop"]["enabled"] and losses["rdrop"]["weight"] > 0:
                     second = model(**batch)
                     key = "log_probs" if model.heads["model"] else "family_log_probs"

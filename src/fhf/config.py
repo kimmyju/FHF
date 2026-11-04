@@ -124,6 +124,16 @@ def validate_config(conf):
             raise ValueError("model.style.hash_dim must be a power of two >=16")
         if int(style.get("hidden_dim", 128)) < 1:
             raise ValueError("model.style.hidden_dim must be positive")
+    perturb = conf.get("style_perturbation", {"enabled": False})
+    if not isinstance(perturb, dict) or type(perturb.get("enabled", False)) is not bool:
+        raise ValueError("style_perturbation.enabled must be boolean")
+    if float(perturb.get("sigma", 0.0)) < 0 or float(perturb.get("weight", 0.0)) < 0:
+        raise ValueError("style_perturbation sigma/weight must be nonnegative")
+    if perturb.get("enabled") and (
+        not style.get("enabled", False) or float(perturb.get("sigma", 0)) <= 0
+        or float(perturb.get("weight", 0)) <= 0
+    ):
+        raise ValueError("Style perturbation requires enabled style, sigma > 0 and weight > 0")
     residual = conf["model"].get("residual_fusion", {})
     if type(residual.get("enabled", False)) is not bool:
         raise ValueError("model.residual_fusion.enabled must be true/false")

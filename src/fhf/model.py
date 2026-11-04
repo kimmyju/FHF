@@ -97,7 +97,7 @@ class FingerprintModel(nn.Module):
         self.flat_head = nn.Linear(hidden, len(MODEL_NAMES)) if self.residual_enabled else None
         self.register_buffer("family_lookup", torch.tensor(MODEL_FAMILY_IDS, dtype=torch.long))
 
-    def forward(self, input_ids, attention_mask, style_features=None, **kwargs):
+    def forward(self, input_ids, attention_mask, style_features=None, style_noise_std=0.0, **kwargs):
         """Encode text with optional style features and combine flat/hierarchical heads."""
         outputs = self.encoder(input_ids=input_ids, attention_mask=attention_mask, **kwargs)
         if self.attention_pool is not None:
@@ -109,7 +109,7 @@ class FingerprintModel(nn.Module):
         if self.style_enabled:
             if style_features is None:
                 raise ValueError("Style-enabled model requires raw-text style_features")
-            pooled, gate_mean = self.style_fusion(pooled, style_features)
+            pooled, gate_mean = self.style_fusion(pooled, style_features, noise_std=style_noise_std)
             result["style_gate_mean"] = gate_mean
         pooled = self.dropout(pooled)
         if self.projection is not None:

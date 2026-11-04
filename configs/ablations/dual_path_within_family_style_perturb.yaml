@@ -1,0 +1,21 @@
+# C: Within-family contrastive + style-space Gaussian perturbation.
+# Same training data/model/optimizer/sampler as experiment B.
+extends: dual_path_within_family.yaml
+experiment: fhf-within-family-style-perturb
+paths:
+  checkpoint_dir: outputs/within-family-style-perturb/checkpoint
+  validation_csv: outputs/within-family-style-perturb/val.csv
+  train_split_csv: outputs/within-family-style-perturb/train_split.csv
+  history_json: outputs/within-family-style-perturb/history.json
+  config_snapshot: outputs/within-family-style-perturb/config_resolved.yaml
+  eval_csv: outputs/within-family-style-perturb/val.csv
+  eval_report: outputs/within-family-style-perturb/evaluation.json
+
+style_perturbation:
+  enabled: true
+  sigma: 0.05
+  weight: 0.10
+
+wandb:
+  run_name: within-family-style-perturb
+  tags: [modernbert, lora, within-family, style-perturbation, consistency]

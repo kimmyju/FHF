@@ -115,8 +115,10 @@ class GatedStyleFusion(nn.Module):
         nn.init.zeros_(self.gate.weight)
         nn.init.constant_(self.gate.bias, -2.0)
 
-    def forward(self, contextual, style_features):
+    def forward(self, contextual, style_features, noise_std=0.0):
         style_features = style_features.to(dtype=contextual.dtype)
         style = self.style_encoder(style_features)
+        if noise_std > 0 and self.training:
+            style = style + torch.randn_like(style) * noise_std
         gate = torch.sigmoid(self.gate(torch.cat((contextual, style), dim=-1)))
         return self.norm(contextual + gate * style), gate.mean()
