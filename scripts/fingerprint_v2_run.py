@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 STAGES=("select", "classical", "hard", "pretrain", "finetune",
-        "deberta", "ensemble")
+        "replay_select", "replay", "deberta", "ensemble")
 DEFAULT=("select", "classical", "hard", "pretrain", "finetune", "ensemble")
 
 
@@ -32,6 +32,13 @@ def commands(python, include_deberta=False, batch_size=32):
     finetune=[python, "scripts/train.py", "--config",
               "configs/fingerprint_v2/finetune.yaml",
               "--set", f"training.samples_per_model={spm}"]
+    replay_select=[python, "scripts/select_open_pool_e1.py",
+                   "--per-model", "30",
+                   "--output", "data/external/replay/selected_30_per_model.csv",
+                   "--report", "outputs/fingerprint-v2/replay/selection_report.json"]
+    replay=[python, "scripts/train.py", "--config",
+            "configs/fingerprint_v2/replay.yaml",
+            "--set", f"training.samples_per_model={spm}"]
     deberta=[python, "scripts/train.py", "--config",
              "configs/fingerprint_v2/deberta.yaml"]
     ensemble=[python, "scripts/fingerprint_v2_ensemble.py",
@@ -40,7 +47,7 @@ def commands(python, include_deberta=False, batch_size=32):
     if include_deberta:
         ensemble += ["--checkpoint","outputs/fingerprint-v2/deberta/checkpoint"]
     return dict(zip(STAGES,(select,classical,hard,pretrain,
-                            finetune,deberta,ensemble)))
+                            finetune,replay_select,replay,deberta,ensemble)))
 
 
 def main():

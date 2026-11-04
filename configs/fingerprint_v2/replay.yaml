@@ -1,0 +1,45 @@
+# Optional Stage-2 ablation: 20% curated external replay for anti-forgetting.
+extends: ../ablations/dual_path_within_family_style_perturb.yaml
+experiment: fingerprint-v2-official-replay
+paths:
+  initial_checkpoint: outputs/fingerprint-v2/pretrain/checkpoint
+  external_source_path: data/external/replay/selected_30_per_model.csv
+  frozen_train_csv: outputs/dual-path-prompt-aware/train_split.csv
+  frozen_validation_csv: outputs/dual-path-prompt-aware/val.csv
+  hard_pair_weights_json: outputs/fingerprint-v2/hard_pairs.json
+  external_clean_csv: outputs/fingerprint-v2/replay/external_clean.csv
+  external_audit_json: outputs/fingerprint-v2/replay/external_audit.json
+  checkpoint_dir: outputs/fingerprint-v2/replay/checkpoint
+  train_split_csv: outputs/fingerprint-v2/replay/train.csv
+  validation_csv: outputs/fingerprint-v2/replay/val.csv
+  history_json: outputs/fingerprint-v2/replay/history.json
+  config_snapshot: outputs/fingerprint-v2/replay/config.yaml
+  eval_csv: outputs/fingerprint-v2/replay/val.csv
+  eval_report: outputs/fingerprint-v2/replay/evaluation.json
+external_data:
+  enabled: true
+  columns:
+    text: text
+    model: model
+    prompt_id: prompt_id
+    prompt_text: null
+    id: id
+  expected_train_rows: 2159
+  expected_validation_rows: 540
+  min_chars: 20
+  min_words: 5
+  min_accepted_rows: 540
+  min_multi_model_prompt_groups: 1
+training:
+  sampler: prompt_matched_full_coverage
+  steps_per_epoch: null
+  epochs: 12
+  learning_rate: 0.00002
+  head_learning_rate: 0.0001
+  batch_families: 4
+  models_per_family: 2
+  samples_per_model: 4
+  gradient_accumulation_steps: 1
+wandb:
+  run_name: v2-official-replay-20pct
+  tags: [fingerprint-v2, official-finetune, replay, external]
