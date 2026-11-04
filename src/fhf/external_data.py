@@ -466,6 +466,13 @@ def training_frames(config):
     """Use the normal split unless an explicitly configured external experiment."""
     if config.get("external_data", {}).get("enabled", False):
         return prepare_external_training(config)
+    if config.get("training", {}).get("frozen_split", False):
+        train = load_csv(resolve_path(config, "frozen_train_csv"))
+        val = load_csv(resolve_path(config, "frozen_validation_csv"))
+        _checked_split(train, val, config.get("external_data", {}))
+        if set(train.text.map(normalize_text)) & set(val.text.map(normalize_text)):
+            raise ValueError("Frozen train and validation response texts overlap")
+        return train, val, None, None
     train, val = grouped_split(
         load_csv(resolve_path(config, "train_csv")),
         float(config["training"]["validation_fraction"]),

@@ -188,7 +188,7 @@ class FingerprintModel(nn.Module):
         }, indent=2), encoding="utf-8")
 
     @classmethod
-    def from_checkpoint(cls, path, map_location="cpu", base_encoder_override=None):
+    def from_checkpoint(cls, path, map_location="cpu", base_encoder_override=None, trainable_adapter=False):
         """Restore without network access, loading LoRA on the exact matching frozen base.
 
         Adapter-only checkpoints require a predownloaded base encoder at
@@ -225,7 +225,7 @@ class FingerprintModel(nn.Module):
         if lora.get("enabled", False):
             from peft import PeftModel
             model.encoder = PeftModel.from_pretrained(
-                model.encoder, str(path / "adapter"), is_trainable=False)
+                model.encoder, str(path / "adapter"), is_trainable=bool(trainable_adapter))
         for name in ("projection", "family_head", "model_head",
                      "flat_head", "attention_pool", "style_fusion"):
             module = getattr(model, name)
@@ -233,4 +233,6 @@ class FingerprintModel(nn.Module):
                 module.load_state_dict(state[name])
         tokenizer = AutoTokenizer.from_pretrained(
             str(path / "tokenizer"), local_files_only=True)
+        if trainable_adapter and lora.get("enabled", False) and not any(p.requires_grad for p in model.encoder.parameters()):
+            raise RuntimeError("Transferred LoRA adapter is unexpectedly frozen")
         return model, tokenizer, meta

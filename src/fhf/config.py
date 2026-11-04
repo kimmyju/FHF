@@ -170,6 +170,16 @@ def validate_config(conf):
         raise ValueError("Dropout must be in [0,1)")
     if int(conf["training"]["epochs"]) < 1:
         raise ValueError("training.epochs must be >= 1")
+    head_lr = conf["training"].get("head_learning_rate")
+    if head_lr is not None and float(head_lr) <= 0:
+        raise ValueError("training.head_learning_rate must be positive")
+    if type(conf["training"].get("frozen_split", False)) is not bool:
+        raise ValueError("training.frozen_split must be boolean")
+    if conf["training"].get("frozen_split"):
+        for key in ("frozen_train_csv", "frozen_validation_csv"):
+            if not conf["paths"].get(key):
+                raise ValueError(f"Frozen split requires paths.{key}")
+
     early = conf["training"].get("early_stopping", {})
     if type(early.get("enabled", False)) is not bool:
         raise ValueError("training.early_stopping.enabled must be true/false")

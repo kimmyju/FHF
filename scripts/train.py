@@ -47,17 +47,35 @@ def run_training(cfg):
     snapshot.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
 
     model_cfg, train_cfg = cfg["model"], cfg["training"]
-    tokenizer = AutoTokenizer.from_pretrained(model_cfg["tokenizer"] or model_cfg["encoder"])
-    model = FingerprintModel(
-        model_cfg["encoder"],
-        dropout=float(model_cfg["dropout"]),
-        projection_dim=int(model_cfg["projection_dim"]),
-        heads=model_cfg["heads"],
-        lora=model_cfg.get("lora", {"enabled": False}),
-        pooling=model_cfg.get("pooling", "mean"),
-        style=model_cfg.get("style", {"enabled": False}),
-        residual_fusion=model_cfg.get("residual_fusion", {"enabled": False}),
-    )
+    initial = cfg["paths"].get("initial_checkpoint")
+    if initial:
+        model, tokenizer, metadata = FingerprintModel.from_checkpoint(
+            resolve_path(cfg, "initial_checkpoint"), trainable_adapter=True)
+        for key, expected in (
+            ("base_encoder", model_cfg["encoder"]),
+            ("heads", model_cfg["heads"]),
+            ("pooling", model_cfg.get("pooling", "mean")),
+            ("style", model_cfg.get("style", {"enabled": False})),
+            ("residual_fusion", model_cfg.get("residual_fusion", {"enabled": False})),
+        ):
+            if metadata.get(key) != expected:
+                raise ValueError(f"Incompatible warm-start checkpoint {key}: "
+                                 f"{metadata.get(key)!r} != {expected!r}")
+        if model.projection is not None and model.projection[-1].out_features != int(model_cfg["projection_dim"]):
+            raise ValueError("Warm-start projection dim mismatch")
+        print(f"Warm-started trainable LoRA + heads from {initial}")
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(model_cfg["tokenizer"] or model_cfg["encoder"])
+        model = FingerprintModel(
+            model_cfg["encoder"],
+            dropout=float(model_cfg["dropout"]),
+            projection_dim=int(model_cfg["projection_dim"]),
+            heads=model_cfg["heads"],
+            lora=model_cfg.get("lora", {"enabled": False}),
+            pooling=model_cfg.get("pooling", "mean"),
+            style=model_cfg.get("style", {"enabled": False}),
+            residual_fusion=model_cfg.get("residual_fusion", {"enabled": False}),
+        )
     prompt_aware = (
         cfg["losses"]["intra_contrastive"]["enabled"]
         and float(cfg["losses"]["intra_contrastive"]["weight"]) > 0

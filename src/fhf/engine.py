@@ -146,8 +146,20 @@ def fit(model, tokenizer, train_loader, valid_loader, out_dir, config, device="c
     trainable = [parameter for parameter in model.parameters() if parameter.requires_grad]
     if not trainable:
         raise ValueError("No trainable model parameters")
+    head_lr = settings.get("head_learning_rate")
+    if head_lr is not None:
+        encoder = [p for name, p in model.named_parameters()
+                   if p.requires_grad and name.startswith("encoder.")]
+        heads = [p for name, p in model.named_parameters()
+                 if p.requires_grad and not name.startswith("encoder.")]
+        if not encoder or not heads:
+            raise ValueError("Separate head LR needs trainable encoder and heads")
+        params = [{"params": encoder, "lr": float(settings["learning_rate"])},
+                  {"params": heads, "lr": float(head_lr)}]
+    else:
+        params = trainable
     optimizer = torch.optim.AdamW(
-        trainable, lr=float(settings["learning_rate"]),
+        params, lr=float(settings["learning_rate"]),
         weight_decay=float(settings["weight_decay"]))
     accumulation = int(settings.get("gradient_accumulation_steps", 1))
     if accumulation < 1:
