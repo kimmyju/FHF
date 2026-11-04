@@ -718,3 +718,35 @@ KL(clean detached || noisy) receives weight 0.10, logged as
 `train/loss_style_perturbation`. Existing R-Drop remains separate. Noise
 is disabled in evaluation/inference. The extra pass increases training cost.
 Use the same prompt-disjoint validation and compare C to B and baseline.
+
+## E1: 100 external examples per target model (combined Open Pool + NTL v2)
+
+```bash
+git pull
+python scripts/select_open_pool_e1.py
+python scripts/prepare_external_data.py --config configs/ablations/within_family_style_perturb_openpool_e1.yaml
+python scripts/train.py --config configs/ablations/within_family_style_perturb_openpool_e1.yaml
+python scripts/evaluate.py --config configs/ablations/within_family_style_perturb_openpool_e1.yaml
+```
+
+The selection phase audits BOTH downloaded corpora (211,369 pool rows + 3,322
+v2 rows), removes exact normalized overlaps including collisions with frozen
+official Train/Val, rejects known proxy/routing flags and unverified risk
+metadata, retains responses 40-250 words, and picks **100 per official model**
+using seeded source-round-robin selection preferring distinct prompt groups.
+The Open Pool duplicates 3,313 v2 responses; duplicate responses count once.
+Because v2 has no risk flag metadata, its 9 unique responses are excluded by
+default from the first conservative E1 run. Both datasets are still audited.
+The data pool has not been independently authenticated; flagged-free does not
+mean source/model routing verified. Check source/API provenance and licenses.
+
+Inputs untouched; selector writes `data/external/e1/selected_100_per_model.csv`
+and `outputs/openpool-e1/selection_report.json`. Preparer writes a frozen
+540-row Val + 3,959-row Train under `outputs/openpool-e1/`. E1 retains
+C's within-family contrastive, style perturbation, LoRA and optimizer, and
+sets `training.steps_per_epoch: 270` to match original prompt-aware C
+(2159/8 batches per epoch) rather than inadvertently increasing gradient
+updates. W&B run `c-openpool-e1-100`.
+
+**Important:** Prompt keys are namespaced by corpus; semantic overlap with
+anonymized validation prompts cannot be excluded mechanically.

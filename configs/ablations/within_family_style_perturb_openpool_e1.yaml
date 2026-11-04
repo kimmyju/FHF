@@ -1,0 +1,42 @@
+# E1: same C architecture and training schedule, +100 external per model.
+# Run scripts/select_open_pool_e1.py before train.py.
+extends: dual_path_within_family_style_perturb.yaml
+experiment: fhf-c-openpool-e1-100
+paths:
+  external_source_path: data/external/e1/selected_100_per_model.csv
+  frozen_train_csv: outputs/dual-path-prompt-aware/train_split.csv
+  frozen_validation_csv: outputs/dual-path-prompt-aware/val.csv
+  external_clean_csv: outputs/openpool-e1/external_clean.csv
+  external_audit_json: outputs/openpool-e1/external_audit.json
+  checkpoint_dir: outputs/openpool-e1/checkpoint
+  train_split_csv: outputs/openpool-e1/train_split.csv
+  validation_csv: outputs/openpool-e1/val.csv
+  history_json: outputs/openpool-e1/history.json
+  config_snapshot: outputs/openpool-e1/config_resolved.yaml
+  eval_csv: outputs/openpool-e1/val.csv
+  eval_report: outputs/openpool-e1/evaluation.json
+
+external_data:
+  enabled: true
+  columns:
+    text: text
+    model: model
+    prompt_id: prompt_id
+    prompt_text: null
+    id: id
+  expected_train_rows: 2159
+  expected_validation_rows: 540
+  min_chars: 20
+  min_words: 5
+  max_per_model: null
+  min_accepted_rows: 1800
+  min_multi_model_prompt_groups: 1
+
+training:
+  # Original 2159 examples / (2 families * 2 models * 2 samples) -> 270 batches.
+  # Hold the number of optimizer updates fixed across C and E1.
+  steps_per_epoch: 270
+
+wandb:
+  run_name: c-openpool-e1-100
+  tags: [modernbert, lora, within-family, style-perturbation, external-data, e1]
