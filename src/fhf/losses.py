@@ -81,6 +81,73 @@ def prompt_aware_contrastive_loss(embeddings, labels, families, prompt_ids,
     return per_anchor.mean()
 
 
+
+def within_family_prompt_contrastive_loss(
+    embeddings, labels, families, prompt_ids,
+    temperature=0.12, same_prompt_weight=3.0,
+):
+    """Contrast only among distinct exact models belonging to the same family.
+
+    Positives: same exact model with DIFFERENT prompts.
+    Negatives: different exact models of the SAME family.
+    Other families and same-model/same-prompt duplicates are excluded.
+    Same-prompt negatives may be upweighted. An anchor contributes only
+    if it has both a valid positive and at least one within-family negative.
+    Singleton-model families therefore have no within-family contrastive
+    gradient; their supervised classification losses remain active.
+    """
+    if prompt_ids is None or prompt_ids.shape != labels.shape:
+        raise ValueError("Within-family contrastive requires aligned prompt_ids")
+    if not temperature > 0 or same_prompt_weight < 1:
+        raise ValueError("Temperature must be positive and same_prompt_weight >= 1")
+    n = len(labels)
+    if n < 2:
+        return embeddings.sum() * 0
+    same_model = labels[:, None].eq(labels[None, :])
+    same_family = families[:, None].eq(families[None, :])
+    same_prompt = prompt_ids[:, None].eq(prompt_ids[None, :])
+    eye = torch.eye(n, dtype=torch.bool, device=labels.device)
+    positives = same_model & ~same_prompt & ~eye
+    negatives = same_family & ~same_model
+    valid = positives.any(dim=1) & negatives.any(dim=1)
+    if not valid.any():
+        return embeddings.sum() * 0
+
+    # FP32 logits avoid half precision underflow at low temperature.
+    sim = embeddings.float() @ embeddings.float().T / temperature
+    allowed = positives | negatives
+    log_weights = torch.zeros_like(sim)
+    log_weights = log_weights.masked_fill(
+        negatives & same_prompt, float(torch.log(torch.tensor(
+            same_prompt_weight, dtype=torch.float32
+        )))
+    )
+    denominator = torch.logsumexp(
+        (sim + log_weights).masked_fill(~allowed, -float("inf")),
+        dim=1,
+    )
+    log_probs = sim - denominator.unsqueeze(1)
+    positive_counts = positives.sum(dim=1).clamp_min(1)
+    per_anchor = -(
+        log_probs.masked_fill(~positives, 0).sum(dim=1) /
+        positive_counts
+    )
+    return per_anchor[valid].mean()
+
+
+def within_family_pair_counts(labels, families, prompt_ids):
+    """Return eligible anchor count and same-family negative unordered pairs."""
+    if prompt_ids is None or labels.shape != prompt_ids.shape or labels.shape != families.shape:
+        raise ValueError("Expected aligned labels, families and prompt_ids")
+    same_model = labels[:, None].eq(labels[None, :])
+    same_family = families[:, None].eq(families[None, :])
+    different_prompt = ~prompt_ids[:, None].eq(prompt_ids[None, :])
+    positives = same_model & different_prompt
+    negatives = same_family & ~same_model
+    eligible = int((positives.any(1) & negatives.any(1)).sum().item())
+    neg_pairs = int(torch.triu(negatives, diagonal=1).sum().item())
+    return eligible, neg_pairs
+
 def symmetric_kl(logp, logq):
     """Symmetric KL on two dropout views of the same unchanged source text."""
     return 0.5 * (F.kl_div(logp, logq.exp(), reduction="batchmean") +
@@ -100,7 +167,13 @@ def objective(outputs, labels, families, config, prompt_ids=None):
         parts["family"] = F.cross_entropy(outputs["family_logits"], families)
     if specs["intra_contrastive"]["enabled"] and specs["intra_contrastive"]["weight"] > 0:
         spec = specs["intra_contrastive"]
-        if spec.get("mode", "standard") == "prompt_aware":
+        if spec.get("mode", "standard") == "within_family":
+            parts["intra_contrastive"] = within_family_prompt_contrastive_loss(
+                outputs["embeddings"], labels, families, prompt_ids,
+                temperature=float(spec["temperature"]),
+                same_prompt_weight=float(spec.get("same_prompt_weight", 3.0)),
+            )
+        elif spec.get("mode", "standard") == "prompt_aware":
             parts["intra_contrastive"] = prompt_aware_contrastive_loss(
                 outputs["embeddings"], labels, families, prompt_ids,
                 temperature=float(spec["temperature"]),

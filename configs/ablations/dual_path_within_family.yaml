@@ -1,0 +1,25 @@
+# Within-family prompt-aware contrastive ablation, compared with 0.398 baseline.
+# No separate feature or style input; regularizes the EXISTING fused projection.
+extends: dual_path_prompt_aware.yaml
+experiment: fhf-dual-path-within-family-contrastive
+paths:
+  checkpoint_dir: outputs/dual-path-within-family/checkpoint
+  validation_csv: outputs/dual-path-within-family/val.csv
+  train_split_csv: outputs/dual-path-within-family/train_split.csv
+  history_json: outputs/dual-path-within-family/history.json
+  config_snapshot: outputs/dual-path-within-family/config_resolved.yaml
+  eval_csv: outputs/dual-path-within-family/val.csv
+  eval_report: outputs/dual-path-within-family/evaluation.json
+
+losses:
+  intra_contrastive:
+    enabled: true
+    weight: 0.25
+    temperature: 0.12
+    hard_weight: 2.0 # ignored by within_family: cross-family negatives excluded
+    mode: within_family
+    same_prompt_weight: 3.0
+
+wandb:
+  run_name: dual-path-within-family
+  tags: [modernbert, lora, dual-path, style, within-family, prompt-aware]

@@ -656,3 +656,46 @@ This uses the **same model initialization and hyperparameters**, with no
 automatic continuation from the 0.398 checkpoint. Keep the old run for
 a comparable ablation. Do not interpret an improvement as causal evidence
 without verifying external label authenticity, domain shift and repeated seeds.
+
+## Within-family prompt-aware contrastive ablation
+
+Run `configs/ablations/dual_path_within_family.yaml` to keep the exact
+Dual-Path model (ModernBERT + style fusion, attention pooling, heads, LoRA,
+R-Drop), official data split, optimizer, epochs, batch sizes, and
+`intra_contrastive.weight=0.25`, changing **only** the contrastive loss
+from `prompt_aware` to `within_family`.
+
+```bash
+git pull
+python scripts/train.py --config configs/ablations/dual_path_within_family.yaml
+python scripts/evaluate.py --config configs/ablations/dual_path_within_family.yaml
+```
+
+Output: `outputs/dual-path-within-family/`; previous ~0.398 checkpoint
+remains untouched. W&B run: `dual-path-within-family`.
+
+Within-family learning on the existing **fused Projection Head**:
+- Positive: same exact generator, different prompt.
+- Negative: different generator **in the same family**.
+- A negative answering the same prompt gets weight 3.0.
+- Examples from **other families**, plus same-model/same-prompt repeats,
+  are excluded from this contrastive denominator.
+- Anchors require both a positive AND a within-family negative; singleton
+  families (e.g. Qwen, Moonshot AI) receive no contrastive gradient but
+  still receive classification/family/R-Drop learning.
+- Keep the original `PromptAwareFamilyBatchSampler` unchanged so the
+  experiment tests the loss definition rather than also changing batches.
+- W&B additional metrics: `train/within_family_valid_anchors` and
+  `train/within_family_negative_pairs`. If few anchors are eligible,
+  the effective contribution of the contrastive term will be small.
+
+**No perturbation and no ground-truth family input to the model:** family
+labels are used only to choose pairs for the training loss. This is
+**not** a new style-only encoder or a family-conditioned inference head;
+the fused projection remains as in the baseline, so the experiment cleanly
+isolates the family-restricted contrastive objective.
+
+Compare BAcc and family/within-family metrics to
+`dual_path_prompt_aware.yaml` on the exact same prompt-disjoint validation
+split. The model is retrained from initialization; no accuracy improvement
+is assumed.

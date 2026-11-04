@@ -9,7 +9,9 @@ import numpy as np
 import torch
 from torch.nn import functional as F
 
-from .losses import objective, symmetric_kl, prompt_aware_pair_counts
+from .losses import (
+    objective, symmetric_kl, prompt_aware_pair_counts, within_family_pair_counts,
+)
 from .hotflip import hotflip_batch
 from .metrics import report, oracle_within_family_predictions
 from .tracking import WandbTracker
@@ -230,6 +232,11 @@ def fit(model, tokenizer, train_loader, valid_loader, out_dir, config, device="c
                             ("train/prompt_positive_pairs", "train/prompt_hard_negative_pairs"),
                             prompt_aware_pair_counts(labels, prompt_ids),
                         )) if prompt_ids is not None else {}),
+                        **(dict(zip(
+                            ("train/within_family_valid_anchors", "train/within_family_negative_pairs"),
+                            within_family_pair_counts(labels, families, prompt_ids),
+                        )) if prompt_ids is not None and
+                            losses["intra_contrastive"].get("mode") == "within_family" else {}),
                     })
             total += raw_loss
             count += 1

@@ -60,7 +60,7 @@ def run_training(cfg):
     prompt_aware = (
         cfg["losses"]["intra_contrastive"]["enabled"]
         and float(cfg["losses"]["intra_contrastive"]["weight"]) > 0
-        and cfg["losses"]["intra_contrastive"].get("mode", "standard") == "prompt_aware"
+        and cfg["losses"]["intra_contrastive"].get("mode", "standard") in ("prompt_aware", "within_family")
     )
     training_ds = TextDataset(
         train, tokenizer, int(model_cfg["max_length"]), style_config=model.style_config,
