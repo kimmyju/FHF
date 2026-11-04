@@ -1,0 +1,28 @@
+# Stage 2: full trainable LoRA + head transfer; strictly frozen official split.
+extends: ../ablations/dual_path_within_family_style_perturb.yaml
+experiment: fingerprint-v2-finetune
+paths:
+  initial_checkpoint: outputs/fingerprint-v2/pretrain/checkpoint
+  frozen_train_csv: outputs/dual-path-prompt-aware/train_split.csv
+  frozen_validation_csv: outputs/dual-path-prompt-aware/val.csv
+  train_split_csv: outputs/fingerprint-v2/finetune/train.csv
+  validation_csv: outputs/fingerprint-v2/finetune/val.csv
+  checkpoint_dir: outputs/fingerprint-v2/finetune/checkpoint
+  history_json: outputs/fingerprint-v2/finetune/history.json
+  config_snapshot: outputs/fingerprint-v2/finetune/config.yaml
+  eval_csv: outputs/fingerprint-v2/finetune/val.csv
+  eval_report: outputs/fingerprint-v2/finetune/evaluation.json
+training:
+  frozen_split: true
+  sampler: full_coverage
+  steps_per_epoch: null
+  epochs: 12
+  learning_rate: 0.00002
+  head_learning_rate: 0.0001
+  batch_families: 4
+  models_per_family: 2
+  samples_per_model: 4
+  gradient_accumulation_steps: 1
+wandb:
+  run_name: v2-official-finetune
+  tags: [fingerprint-v2, stage2, official, transfer]

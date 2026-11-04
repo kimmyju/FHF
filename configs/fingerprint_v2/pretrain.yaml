@@ -1,0 +1,25 @@
+# Stage 1: use ONLY curated external responses; keep original official holdout sealed.
+extends: ../ablations/dual_path_within_family_style_perturb.yaml
+experiment: fingerprint-v2-pretrain
+paths:
+  train_csv: data/external/full/selected_3495_per_model.csv
+  train_split_csv: outputs/fingerprint-v2/pretrain/train.csv
+  validation_csv: outputs/fingerprint-v2/pretrain/val.csv
+  checkpoint_dir: outputs/fingerprint-v2/pretrain/checkpoint
+  history_json: outputs/fingerprint-v2/pretrain/history.json
+  config_snapshot: outputs/fingerprint-v2/pretrain/config.yaml
+  eval_csv: outputs/fingerprint-v2/pretrain/val.csv
+  eval_report: outputs/fingerprint-v2/pretrain/evaluation.json
+training:
+  sampler: full_coverage
+  steps_per_epoch: null
+  validation_fraction: 0.05
+  epochs: 4
+  learning_rate: 0.0001
+  batch_families: 4
+  models_per_family: 2
+  samples_per_model: 4
+  gradient_accumulation_steps: 1
+wandb:
+  run_name: v2-external-pretrain
+  tags: [fingerprint-v2, stage1, external, modernbert]
