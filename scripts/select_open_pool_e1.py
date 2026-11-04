@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from collections import Counter
+from collections import Counter, deque
 from pathlib import Path
 
 import numpy as np
@@ -19,11 +19,9 @@ from fhf.labels import MODEL_NAMES
 
 
 def pick_balanced(rows, per_model=100, seed=42):
-    """Deterministic round-robin by source, favoring new prompt groups.
+    """Deterministic source round-robin with prompt diversity, O(N log N).
 
-    The audit has already resolved cross-source exact duplicates. Native
-    prompt IDs are namespaced by input dataset: no assumption that different
-    sources use the same prompt identifier. Model-level coverage is enforced.
+    Never duplicate a row or silently undersample a model.
     """
     if per_model < 1:
         raise ValueError("per_model must be positive")
@@ -31,55 +29,39 @@ def pick_balanced(rows, per_model=100, seed=42):
     work = rows.copy()
     if not work.index.is_unique:
         raise ValueError("Candidate indices must be unique")
-    # Pool prompt_group is meaningful within Open Pool. For v2 use normalized
-    # prompt text; labels from different corpora never collide by accident.
-    work["prompt_identity"] = (
-        work.input_dataset.astype(str) + ":" + work.prompt_key.astype(str)
-    )
-    if work.prompt_identity.isna().any():
-        raise ValueError("Missing prompt identity")
-    selection = []
+    if work.prompt_key.isna().any():
+        raise ValueError("Missing prompt keys")
+    work["prompt_identity"] = work.input_dataset.astype(str) + ":" + work.prompt_key.astype(str)
+    selected = []
     for model in MODEL_NAMES:
-        pool = work[work.model == model].copy()
-        if len(pool) < per_model:
-            raise ValueError(f"{model}: only {len(pool)} eligible, need {per_model}")
-        # Seeded shuffle ensures we do not select the source file's first rows.
-        pool["_random"] = rng.random(len(pool))
-        pool = pool.sort_values("_random", kind="stable")
-        queues = {
-            str(source): frame.index.tolist()
-            for source, frame in pool.groupby("source_dataset", sort=True)
-        }
-        # Prefer new prompts within each class to avoid single-prompt memorization.
-        used_prompts = set()
-        source_counts = Counter()
-        remaining = set(pool.index.tolist())
-        while len(selection_for_model := [i for i in selection if work.at[i, "model"] == model]) < per_model:
-            available_sources = [s for s, indices in queues.items()
-                                 if any(i in remaining for i in indices)]
-            if not available_sources:
-                raise RuntimeError(f"{model}: exhausted sources")
-            min_count = min(source_counts[s] for s in available_sources)
-            least_used_sources = [s for s in available_sources if source_counts[s] == min_count]
-            # If equal-source candidates exist, prioritize those offering a new prompt.
-            source = min(
-                least_used_sources,
-                key=lambda s: (
-                    not any(work.at[i, "prompt_identity"] not in used_prompts
-                            for i in queues[s] if i in remaining),
-                    s,
-                ),
-            )
-            choices = [i for i in queues[source] if i in remaining]
-            fresh = [i for i in choices if work.at[i, "prompt_identity"] not in used_prompts]
-            chosen = fresh[0] if fresh else choices[0]
-            selection.append(chosen)
-            remaining.remove(chosen)
-            used_prompts.add(work.at[chosen, "prompt_identity"])
-            source_counts[source] += 1
-    picked = work.loc[selection].copy()
-    assert len(picked) == per_model * len(MODEL_NAMES)
-    assert picked.text_key.is_unique
+        group = work.loc[work.model == model].copy()
+        if len(group) < per_model:
+            raise ValueError(f"{model}: only {len(group)} eligible, need {per_model}")
+        group["_random"] = rng.random(len(group))
+        group = group.sort_values("_random", kind="stable")
+        queues = {str(source): deque(part.index.tolist())
+                  for source, part in group.groupby("source_dataset", sort=True)}
+        seen_prompts = set()
+        usage = Counter()
+        for _ in range(per_model):
+            available = [s for s, q in queues.items() if q]
+            if not available:
+                raise RuntimeError(f"{model}: no eligible rows remain")
+            source = min(available, key=lambda s: (usage[s], s))
+            q = queues[source]
+            # Prefer new prompt keys without making a full-corpus rescan.
+            rotation_limit = min(16, len(q))
+            for _ in range(rotation_limit):
+                if work.at[q[0], "prompt_identity"] not in seen_prompts:
+                    break
+                q.rotate(-1)
+            idx = q.popleft()
+            selected.append(idx)
+            seen_prompts.add(work.at[idx, "prompt_identity"])
+            usage[source] += 1
+    picked = work.loc[selected].copy()
+    if len(picked) != per_model * len(MODEL_NAMES) or not picked.text_key.is_unique:
+        raise RuntimeError("Selection not balanced or unique")
     return picked
 
 

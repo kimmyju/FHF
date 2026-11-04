@@ -1,0 +1,40 @@
+# Full-coverage model-balanced dataset, within-family C architecture
+extends: dual_path_within_family_style_perturb.yaml
+experiment: fhf-full-3541
+paths:
+  external_source_path: data/external/full/selected_3541_per_model.csv
+  frozen_train_csv: outputs/dual-path-prompt-aware/train_split.csv
+  frozen_validation_csv: outputs/dual-path-prompt-aware/val.csv
+  external_clean_csv: outputs/openpool-full-3541/external_clean.csv
+  external_audit_json: outputs/openpool-full-3541/external_audit.json
+  checkpoint_dir: outputs/openpool-full-3541/checkpoint
+  train_split_csv: outputs/openpool-full-3541/train_split.csv
+  validation_csv: outputs/openpool-full-3541/val.csv
+  history_json: outputs/openpool-full-3541/history.json
+  config_snapshot: outputs/openpool-full-3541/config_resolved.yaml
+  eval_csv: outputs/openpool-full-3541/val.csv
+  eval_report: outputs/openpool-full-3541/evaluation.json
+external_data:
+  enabled: true
+  columns:
+    text: text
+    model: model
+    prompt_id: prompt_id
+    prompt_text: null
+    id: id
+  expected_train_rows: 2159
+  expected_validation_rows: 540
+  min_chars: 20
+  min_words: 1
+  min_accepted_rows: 63738
+  min_multi_model_prompt_groups: 1
+training:
+  sampler: full_coverage
+  steps_per_epoch: null
+  batch_families: 4
+  models_per_family: 2
+  samples_per_model: 4
+  gradient_accumulation_steps: 1
+wandb:
+  run_name: c-full-3541-b32
+  tags: [modernbert, lora, within-family, style-perturbation, external-data, full-coverage]

@@ -19,6 +19,7 @@ from fhf.data import (
     PromptAwareFamilyBatchSampler, make_collator,
 )
 from fhf.external_data import training_frames, write_external_audit
+from fhf.full_coverage import FullCoveragePromptFamilyBatchSampler
 from fhf.engine import fit, seed_everything
 from fhf.model import FingerprintModel
 from fhf.tracking import WandbTracker
@@ -70,7 +71,15 @@ def run_training(cfg):
         val, tokenizer, int(model_cfg["max_length"]), style_config=model.style_config
     )
     collator = make_collator(tokenizer)
-    sampler_cls = PromptAwareFamilyBatchSampler if prompt_aware else FamilyBatchSampler
+    sampler_mode = train_cfg.get("sampler", "balanced")
+    if sampler_mode == "full_coverage":
+        if not prompt_aware:
+            raise ValueError("full_coverage requires prompt-aware labels")
+        sampler_cls = FullCoveragePromptFamilyBatchSampler
+    elif sampler_mode == "balanced":
+        sampler_cls = PromptAwareFamilyBatchSampler if prompt_aware else FamilyBatchSampler
+    else:
+        raise ValueError(f"Unknown sampler mode: {sampler_mode}")
     sampler = sampler_cls(
         training_ds.labels,
         **({"prompt_ids": training_ds.prompt_ids} if prompt_aware else {}),
@@ -80,6 +89,9 @@ def run_training(cfg):
         steps_per_epoch=train_cfg.get("steps_per_epoch"),
         seed=int(cfg["seed"]),
     )
+    print(f"Training rows={len(train)}, sampler={sampler_mode}, "
+          f"batch size={int(train_cfg['batch_families']) * int(train_cfg['models_per_family']) * int(train_cfg['samples_per_model'])}, "
+          f"batches per epoch={len(sampler)}")
     train_loader = DataLoader(
         training_ds, batch_sampler=sampler, collate_fn=collator,
         num_workers=int(train_cfg["num_workers"]),

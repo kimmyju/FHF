@@ -744,9 +744,35 @@ Inputs untouched; selector writes `data/external/e1/selected_100_per_model.csv`
 and `outputs/openpool-e1/selection_report.json`. Preparer writes a frozen
 540-row Val + 3,959-row Train under `outputs/openpool-e1/`. E1 retains
 C's within-family contrastive, style perturbation, LoRA and optimizer, and
-sets `training.steps_per_epoch: 270` to match original prompt-aware C
-(2159/8 batches per epoch) rather than inadvertently increasing gradient
-updates. W&B run `c-openpool-e1-100`.
+uses a full-coverage sampler and `steps_per_epoch: null`, ensuring all
+3,959 training rows appear once per epoch. W&B run `c-openpool-e1-100`.
 
 **Important:** Prompt keys are namespaced by corpus; semantic overlap with
 anonymized validation prompts cannot be excluded mechanically.
+
+## Large external full-coverage experiments
+
+Original 3,541 Gemini 3.7 Flash rows are RAW; 3,495 remained after risk,
+duplicate, and 40-250 word filters. The conservative first option is 3,495
+external examples per model (62,910 external + 2,159 official = 65,069).
+Each row is visited exactly once per epoch by `full_coverage`, not sampled
+with replacement. Batch 32 (4 families × 2 models × 4 examples), accumulation 1.
+
+```bash
+python scripts/select_open_pool_full.py
+python scripts/prepare_external_data.py --config configs/ablations/within_family_style_perturb_openpool_full_3495.yaml
+python scripts/train.py --config configs/ablations/within_family_style_perturb_openpool_full_3495.yaml
+```
+
+Attempt 3,541/model only with a relaxed length constraint, keeping risk flags
+and duplicates excluded. It may fail if not enough eligible rows remain:
+```bash
+python scripts/select_open_pool_full.py --per-model 3541 --min-words 1 --max-words 10000
+python scripts/prepare_external_data.py --config configs/ablations/within_family_style_perturb_openpool_full_3541.yaml
+python scripts/train.py --config configs/ablations/within_family_style_perturb_openpool_full_3541.yaml
+```
+
+To try batch 64, append `--set training.samples_per_model=8` to the
+training command. The model does multiple forwards (style perturbation and
+R-Drop); check memory. Increasing batch size changes optimization, not just
+speed. No GPU training has been run by this repository change.

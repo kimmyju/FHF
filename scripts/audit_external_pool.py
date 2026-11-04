@@ -131,11 +131,11 @@ def audit(train, val, v2, pool, min_words=40, max_words=250):
         & ~candidates.native_prompt_missing
     )
     # Unknown risk metadata remain visible rather than falsely treated as safe.
-    # Duplicate selection prioritizes v2 for reproducibility, not because it is
-    # verified to be better; source-level vetting is required before training.
+    # Duplicate selection prioritizes Open Pool to preserve risk flags, not because
+    # its labels have been verified; source-level vetting is required before training.
     eligible = candidates[candidates.provisional_eligible].copy()
     eligible = eligible.sort_values(["input_dataset", "source_row"],
-                                  key=lambda s: s.map({"ntl_v2": 0, "open_pool": 1})
+                                  key=lambda s: s.map({"open_pool": 0, "ntl_v2": 1})
                                   if s.name == "input_dataset" else s)
     eligible["selected_after_exact_dedup"] = ~eligible.duplicated("text_key", keep="first")
     candidates["selected_after_exact_dedup"] = False

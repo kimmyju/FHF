@@ -33,9 +33,8 @@ external_data:
   min_multi_model_prompt_groups: 1
 
 training:
-  # Original 2159 examples / (2 families * 2 models * 2 samples) -> 270 batches.
-  # Hold the number of optimizer updates fixed across C and E1.
-  steps_per_epoch: 270
+  sampler: full_coverage
+  steps_per_epoch: null
 
 wandb:
   run_name: c-openpool-e1-100
