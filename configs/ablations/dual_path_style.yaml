@@ -19,7 +19,7 @@ model:
     hidden_dim: 128
   residual_fusion:
     enabled: true
-    flat_weight: 0.5
+    flat_weight: 0.5 #0.75 #0.5
 
 losses:
   # The fused prediction has the usual 18-class objective.
