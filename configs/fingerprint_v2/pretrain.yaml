@@ -11,7 +11,7 @@ paths:
   eval_csv: outputs/fingerprint-v2/pretrain/val.csv
   eval_report: outputs/fingerprint-v2/pretrain/evaluation.json
 training:
-  sampler: full_coverage
+  sampler: prompt_matched_full_coverage
   steps_per_epoch: null
   validation_fraction: 0.05
   epochs: 4

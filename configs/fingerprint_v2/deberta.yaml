@@ -1,0 +1,38 @@
+# Optional independent encoder for complementary ensemble errors.
+# Train on official frozen split. Architecture adapts LoRA modules for DeBERTa.
+extends: ../ablations/dual_path_within_family_style_perturb.yaml
+experiment: fingerprint-v2-deberta
+paths:
+  frozen_train_csv: outputs/dual-path-prompt-aware/train_split.csv
+  frozen_validation_csv: outputs/dual-path-prompt-aware/val.csv
+  train_split_csv: outputs/fingerprint-v2/deberta/train.csv
+  validation_csv: outputs/fingerprint-v2/deberta/val.csv
+  checkpoint_dir: outputs/fingerprint-v2/deberta/checkpoint
+  history_json: outputs/fingerprint-v2/deberta/history.json
+  config_snapshot: outputs/fingerprint-v2/deberta/config.yaml
+  eval_csv: outputs/fingerprint-v2/deberta/val.csv
+  eval_report: outputs/fingerprint-v2/deberta/evaluation.json
+model:
+  encoder: microsoft/deberta-v3-large
+  lora:
+    enabled: true
+    r: 16
+    alpha: 32
+    dropout: 0.05
+    target_modules: [query_proj, key_proj, value_proj]
+    bias: none
+    initial_adapter: null
+    bundle_base_encoder: false
+training:
+  frozen_split: true
+  sampler: prompt_matched_full_coverage
+  steps_per_epoch: null
+  epochs: 12
+  learning_rate: 0.00002
+  batch_families: 2
+  models_per_family: 2
+  samples_per_model: 2
+  gradient_accumulation_steps: 2
+wandb:
+  run_name: v2-deberta-independent
+  tags: [fingerprint-v2, deberta, official, ensemble]
