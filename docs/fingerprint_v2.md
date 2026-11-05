@@ -148,3 +148,52 @@ Run the two isolated experiment configs with new, separate checkpoints:
     python scripts/fingerprint_v2_ensemble.py --mode validation --checkpoint outputs/fingerprint-v2/finetune-isolated/checkpoint --output outputs/fingerprint-v2/ensemble/validation_prompt_isolated.csv
 
 Compare validation_prompt_isolated.json with the baseline validation.json (0.5185 BAcc). This uses the original lexical model and fixed neural weight 0.7. Only one variable changes: prompt matching for groups >32 in external pretraining. You must NOT run the default multi-stage driver to evaluate this ablation, because it would regenerate/overwrite the baseline outputs. We recommend repeating multiple seeds before drawing conclusions.
+
+## Diagnose GLM 5.3 and Flash misclassification as Claude Fable
+
+On the isolated 18-model neural checkpoint, 31/60 real GLM validation rows predict Claude Fable, while only 3/60 are exactly correct. This section separates possible causes without changing training labels or fitting anything to frozen validation.
+
+### Step 1. Check trained heads (single GPU inference; no training)
+
+    CUDA_VISIBLE_DEVICES=2 python scripts/fingerprint_v2_glm_heads.py \\
+      --checkpoint outputs/fingerprint-v2/finetune-isolated/checkpoint
+
+Outputs:
+
+- outputs/fingerprint-v2/glm-root-cause/heads/head_diagnosis.json: GLM and Fable true-label counts, family-head ZAI versus Anthropic, flat and hierarchical predictions, oracle within-ZAI correctness.
+- outputs/fingerprint-v2/glm-root-cause/heads/focus_head_probabilities.csv: sample-level scores, the top-two final confidence margin, and separate branch probabilities. This CSV contains IDs, labels and probabilities, **not raw text**.
+
+Interpretations:
+
+- Many GLM samples already classified as Anthropic by family_head: investigate provider-classification head / domain shift.
+- family_head correctly chooses ZAI but flat_pred_model chooses Fable: investigate flat branch and fusion; changing the family head alone is unlikely to fix it.
+- family_head correctly chooses ZAI, but oracle within-ZAI GLM-vs-Flash accuracy is also low: provider discrimination is separate from GLM version discrimination.
+- If GLM has a small top1-vs-top2 probability gap, bias/calibration might help, but only if trained using **matched TRAIN OOF** predictions; do not tune offsets on frozen validation.
+
+### Step 2. Official-TRAIN-only 3-class distinguishability probe
+
+Run the frozen **external-only** pretrained ModernBERT checkpoint so the learned representation has never seen official TRAIN:
+
+    CUDA_VISIBLE_DEVICES=2 python scripts/fingerprint_v2_glm_probe.py \\
+      --checkpoint outputs/fingerprint-v2/pretrain-isolated/checkpoint
+
+For a quick CPU-only lexical baseline, without any checkpoint:
+
+    python scripts/fingerprint_v2_glm_probe.py --checkpoint none \\
+      --out outputs/fingerprint-v2/glm-root-cause/probes-lexical
+
+Outputs:
+
+- outputs/fingerprint-v2/glm-root-cause/probes/probe_summary.json: 5-fold prompt-group-disjoint OOF BAcc and confusion matrices for char TF-IDF and frozen neural-feature linear probe.
+- outputs/fingerprint-v2/glm-root-cause/probes/official_train_oof_predictions.csv: predictions by each diagnostic method, 359 official TRAIN rows only.
+
+The neural feature is the **input to the model_head**, after the frozen encoder and optional style fusion; it is extracted using a forward hook, without retraining the checkpoint. A LogisticRegression linear probe is trained *inside each official TRAIN GroupKFold fold only*. Do not report a probe on official-fine-tuned features as an unbiased held-out score: the encoder would have seen the train data earlier.
+
+Interpretation matrix:
+
+- Char TF-IDF and frozen feature probe both close to 1/3: official TRAIN contains weak 3-way discriminative evidence under these methods, or provenance/label/prompt issues need scrutiny.
+- Frozen feature probe clearly outperforms lexical probe: the pretrained representation contains useful separation; inspect 18-class heads/losses.
+- Official-train probe substantially outperforms external 3-class benchmark: external training domain differs from official; source or prompt composition may matter.
+- Strong pretrained probe but incorrect family/flat heads on frozen validation: targeted official-only head or fusion ablation is a plausible *future* training experiment, not a validated fix.
+
+Do **not** edit training configs, class labels, or the official validation for these two diagnostics. An independent frozen validation is for final evaluation, not selecting the best of many posthoc configurations. Both scripts are diagnostic only, and baseline checkpoints remain unchanged.
