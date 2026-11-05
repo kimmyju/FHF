@@ -115,3 +115,22 @@ Quick lexical-only sanity check (not valid calibration for the 70% neural ensemb
     python scripts/fingerprint_v2_calibration.py --mode fit --neural-weight 0 --bias-json outputs/fingerprint-v2/calibration/lexical_only.json
 
 This trains a lexical-only bias for separate experiments. **Do not apply lexical-only biases to the existing neural-heavy ensemble.**
+
+## Verify the 434-row GLM prompt-group suspicion
+
+    git pull
+    python scripts/fingerprint_v2_verify.py
+
+No GPU or model retraining is needed. This joins the selected responses back to the original Open Pool by normalized response SHA-256, exact model, and source name. It then checks whether the large selected prompt group contains multiple original raw prompt groups and, **if present**, multiple actual prompt texts. Results go under outputs/fingerprint-v2/prompt-source-verification/large_prompt_groups.csv and raw_prompt_group_matches.csv.
+
+Interpretation:
+
+- MULTIPLE_ORIGINAL_PROMPTS or MULTIPLE_RAW_PROMPT_GROUPS: grouped samples are not all the same recorded prompt; do not use the collapsed key for same-prompt contrastive training.
+- UNVERIFIED_ORIGINAL_PROMPT_TEXT_UNAVAILABLE: source has insufficient prompt metadata; the 434 identical IDs **do not** prove 434 identical prompts.
+- SINGLE_RECORDED_PROMPT_NOT_API_VERIFIED: appears internally consistent, but original API requests still need external confirmation.
+
+For an independent GLM/Fable **three-class** source-shift experiment, run:
+
+    python scripts/fingerprint_v2_verify.py --benchmark
+
+The script compares a prompt-group-disjoint random split to leave-one-source-out tests, using a lightweight **external-data-only** char-TFIDF classifier (not the trained ModernBERT). It optionally reports external-trained performance on official TRAIN, never on official Validation. The benchmark source test is not an estimate of final 18-class BAcc; interpret a lower unseen-source score as source/domain shift evidence, not proof of mislabeled examples. Source-specific prompt topics, collection settings, and routing are confounded.
