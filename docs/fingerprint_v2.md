@@ -70,3 +70,48 @@ The output is outputs/fingerprint-v2/ensemble/submission.parquet with only id,mo
 - Different encoders and larger batches change compute and optimization, not just data volume.
 - Report BAcc, Oracle within-family accuracy, per-model recall, family accuracy, domain AUC and error complementarity.
 - Validate all improvements on the frozen 540 examples; no claim of 74% without actual scoring.
+
+## Diagnosing GLM-vs-Fable confusion (no GPU)
+
+From the repository root:
+
+    git pull
+    python scripts/fingerprint_v2_source_audit.py
+
+Outputs under outputs/fingerprint-v2/source-audit/:
+
+- summary.json: source concentration, exact cross-label conflicts, official response overlap, raw-pool routing metadata flags if available.
+- source_by_model.csv: all 18 labels by external source dataset.
+- style_comparison.csv: length, punctuation, headings, paragraph counts for official vs external GLM/Fable.
+- focus_rows.csv: selected-row IDs, source_dataset, normalized response SHA-256 and raw-metadata checks; **no response texts by default**. Use --include-text only for local manual review.
+
+This is a **read-only heuristic audit**. It cannot prove which API actually generated an example; verify source logs and routing externally. The audit never changes official labels, datasets or checkpoints.
+
+## Proper post-hoc calibration
+
+The saved validation.csv contains 0.5185 BAcc and is **not** used for fitting or selecting class biases. Fitting the current 70% neural / 30% lexical ensemble requires **neural TRAIN OOF predictions**, because lexical-only OOF does not represent the trained neural classifier.
+
+    python scripts/fingerprint_v2_neural_oof.py --mode prepare
+    for i in 0 1 2 3 4; do
+      python scripts/fingerprint_v2_neural_oof.py --mode train --fold "$i"
+    done
+    python scripts/fingerprint_v2_neural_oof.py --mode collect
+    python scripts/fingerprint_v2_calibration.py --mode fit --neural-weight 0.7
+    python scripts/fingerprint_v2_calibration.py --mode apply
+
+Calibration fits a bounded, regularized per-class logit bias on the OOF predictions; the script uses a second prompt-group cross-fit to compare uncalibrated vs calibrated TRAIN OOF without fitting on those fold targets. Both scores remain *training-distribution diagnostics*, not public/private leaderboard promises.
+
+The fitted offsets are stored in outputs/fingerprint-v2/calibration/fit.json. Comparison of saved ensemble validation predictions goes to outputs/fingerprint-v2/calibration/validation_calibrated.csv and .json **without overwriting baseline files**.
+
+For newly generated validation/test predictions, apply the matching calibration automatically:
+
+    python scripts/fingerprint_v2_ensemble.py --mode validation --checkpoint outputs/fingerprint-v2/finetune/checkpoint --bias-json outputs/fingerprint-v2/calibration/fit.json
+    python scripts/fingerprint_v2_ensemble.py --mode test --checkpoint outputs/fingerprint-v2/finetune/checkpoint --bias-json outputs/fingerprint-v2/calibration/fit.json
+
+The inference script rejects neural/lexical weight mismatches. If using multiple neural checkpoints (e.g. ModernBERT + DeBERTa), do not reuse biases fitted for a *single-neural* ensemble.
+
+Quick lexical-only sanity check (not valid calibration for the 70% neural ensemble):
+
+    python scripts/fingerprint_v2_calibration.py --mode fit --neural-weight 0 --bias-json outputs/fingerprint-v2/calibration/lexical_only.json
+
+This trains a lexical-only bias for separate experiments. **Do not apply lexical-only biases to the existing neural-heavy ensemble.**
