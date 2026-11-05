@@ -134,3 +134,17 @@ For an independent GLM/Fable **three-class** source-shift experiment, run:
     python scripts/fingerprint_v2_verify.py --benchmark
 
 The script compares a prompt-group-disjoint random split to leave-one-source-out tests, using a lightweight **external-data-only** char-TFIDF classifier (not the trained ModernBERT). It optionally reports external-trained performance on official TRAIN, never on official Validation. The benchmark source test is not an estimate of final 18-class BAcc; interpret a lower unseen-source score as source/domain shift evidence, not proof of mislabeled examples. Source-specific prompt topics, collection settings, and routing are confounded.
+
+## Non-destructive unverified prompt-group ablation
+
+The raw Open Pool has no verifiable original prompt text for large groups: a single selected prompt ID contains 1,820 Gemini samples, and another contains 434 GLM samples. Neither is proof of a collision. Do not relabel, delete or overwrite samples based on size alone.
+
+The optional ablation keeps **all samples and labels**, and keeps the original prompt IDs for train/validation grouping. Only the prompt identities seen by the contrastive loss and prompt-matched sampler are changed: groups with **more than 32 rows** are replaced by unique IDs *per row*. The number of affected rows is logged in each experiment's prompt_safety_report.json. This removes same-prompt negatives for the unverified large groups, while retaining ordinary class learning and all other samples.
+
+Run the two isolated experiment configs with new, separate checkpoints:
+
+    python scripts/train.py --config configs/fingerprint_v2/pretrain_prompt_isolated.yaml
+    python scripts/train.py --config configs/fingerprint_v2/finetune_prompt_isolated.yaml
+    python scripts/fingerprint_v2_ensemble.py --mode validation --checkpoint outputs/fingerprint-v2/finetune-isolated/checkpoint --output outputs/fingerprint-v2/ensemble/validation_prompt_isolated.csv
+
+Compare validation_prompt_isolated.json with the baseline validation.json (0.5185 BAcc). This uses the original lexical model and fixed neural weight 0.7. Only one variable changes: prompt matching for groups >32 in external pretraining. You must NOT run the default multi-stage driver to evaluate this ablation, because it would regenerate/overwrite the baseline outputs. We recommend repeating multiple seeds before drawing conclusions.
