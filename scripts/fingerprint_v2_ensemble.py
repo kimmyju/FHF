@@ -20,6 +20,7 @@ from fhf.data import TextDataset, load_csv, make_collator
 from fhf.model import FingerprintModel
 from fhf.labels import MODEL_NAMES, MODEL_TO_ID
 from fhf.metrics import report
+from fhf.v2_confusion import diagnose
 from fhf.v2_ensemble import select_lexical_weights, select_neural_weight, combine
 
 
@@ -93,6 +94,7 @@ def run(mode, data, official_train, oof_file, classical_model, checkpoints,
         for i,name in enumerate(MODEL_NAMES):
             prediction[f"prob_{name}"]=fused[:,i]
         prediction.to_csv(output,index=False)
+        diagnose(prediction, output.parent / "diagnostics")
     summary={
         "mode":mode,"n":len(data),"output":str(output),
         "neural_weight":neural_weight,
