@@ -95,6 +95,16 @@ def validate_config(conf):
         raise ValueError("Flat classification loss requires residual fusion with both classifier heads")
     if active("family") and not heads["family"]:
         raise ValueError("Family loss requires family head")
+    balance = conf["losses"]["family"].get("class_balance", {})
+    if not isinstance(balance, dict) or type(balance.get("enabled", False)) is not bool:
+        raise ValueError("losses.family.class_balance.enabled must be boolean")
+    if balance.get("enabled", False):
+        if not active("family") or not heads["family"]:
+            raise ValueError("Family balance requires enabled family loss and head")
+        power = balance.get("power", 1.0)
+        if (isinstance(power, bool) or not isinstance(power, (int, float))
+                or not 0 <= power <= 1):
+            raise ValueError("Family balance power must lie within [0,1]")
     contrastive = conf["losses"]["intra_contrastive"]
     if contrastive.get("mode", "standard") not in ("standard", "prompt_aware", "within_family"):
         raise ValueError("Contrastive mode must be standard, prompt_aware or within_family")

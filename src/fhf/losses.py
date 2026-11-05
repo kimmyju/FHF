@@ -183,7 +183,24 @@ def objective(outputs, labels, families, config, prompt_ids=None):
     if flat.get("enabled", False) and flat.get("weight", 0) > 0:
         parts["flat_classification"] = F.nll_loss(outputs["flat_log_probs"], labels)
     if specs["family"]["enabled"] and specs["family"]["weight"] > 0:
-        parts["family"] = F.cross_entropy(outputs["family_logits"], families)
+        configured_weights = specs["family"].get("class_weights")
+        if configured_weights is None:
+            parts["family"] = F.cross_entropy(outputs["family_logits"], families)
+        else:
+            # Keep loss scale comparable across different family compositions.
+            # torch CE(weight=..., reduction='mean') would divide by the sum
+            # of in-batch weights, partly cancelling weights in skewed batches.
+            weights = torch.as_tensor(
+                configured_weights, device=outputs["family_logits"].device,
+                dtype=torch.float32,
+            )
+            if (weights.ndim != 1 or weights.numel() != outputs["family_logits"].shape[-1]
+                    or not torch.isfinite(weights).all() or not bool((weights > 0).all())):
+                raise ValueError("Invalid provider class_weights")
+            per_example = F.cross_entropy(
+                outputs["family_logits"].float(), families, reduction="none"
+            )
+            parts["family"] = (per_example * weights[families]).mean()
     if specs["intra_contrastive"]["enabled"] and specs["intra_contrastive"]["weight"] > 0:
         spec = specs["intra_contrastive"]
         if spec.get("mode", "standard") == "within_family":

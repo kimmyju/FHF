@@ -22,6 +22,7 @@ from fhf.external_data import training_frames, write_external_audit
 from fhf.full_coverage import FullCoveragePromptFamilyBatchSampler
 from fhf.prompt_match import PromptMatchedFullCoverageBatchSampler
 from fhf.v2_prompt_safety import safe_prompt_ids
+from fhf.v2_family_balance import family_class_weights
 from fhf.engine import fit, seed_everything
 from fhf.model import FingerprintModel
 from fhf.tracking import WandbTracker
@@ -51,6 +52,20 @@ def run_training(cfg):
             f"{audit['raw_rows']} samples; merged train={audit['merged_train_rows']}; "
             f"frozen validation={audit['frozen_validation_rows']}"
         )
+    # All balance weights derive ONLY from this run's training split.
+    balance = cfg["losses"]["family"].get("class_balance", {})
+    if balance.get("enabled", False):
+        weights, balance_report = family_class_weights(
+            train["model"].tolist(), power=float(balance.get("power", 1.0)))
+        cfg["losses"]["family"]["class_weights"] = weights
+        report_path = checkpoint_dir.parent / "family_balance_report.json"
+        report_path.write_text(
+            json.dumps(balance_report, indent=2, ensure_ascii=False),
+            encoding="utf-8")
+        print(f"Train-only family balance: {json.dumps(balance_report['weights'])}")
+    else:
+        # A disabled switch must never retain weights from a reused cfg object.
+        cfg["losses"]["family"].pop("class_weights", None)
     snapshot = resolve_path(cfg, "config_snapshot")
     snapshot.parent.mkdir(parents=True, exist_ok=True)
     snapshot.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")

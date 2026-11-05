@@ -1,0 +1,21 @@
+# A/B against finetune_prompt_isolated.yaml; only auxiliary family CE changes.
+# External-only pretraining, official TRAIN/validation split, sampler, seed,
+# learning rates, losses and epoch-selection policy remain identical.
+extends: finetune_prompt_isolated.yaml
+experiment: fingerprint-v2-finetune-isolated-family-balanced
+paths:
+  train_split_csv: outputs/fingerprint-v2/finetune-isolated-family-balanced/train.csv
+  validation_csv: outputs/fingerprint-v2/finetune-isolated-family-balanced/val.csv
+  checkpoint_dir: outputs/fingerprint-v2/finetune-isolated-family-balanced/checkpoint
+  history_json: outputs/fingerprint-v2/finetune-isolated-family-balanced/history.json
+  config_snapshot: outputs/fingerprint-v2/finetune-isolated-family-balanced/config.yaml
+  eval_csv: outputs/fingerprint-v2/finetune-isolated-family-balanced/val.csv
+  eval_report: outputs/fingerprint-v2/finetune-isolated-family-balanced/evaluation.json
+losses:
+  family:
+    class_balance:
+      enabled: true
+      power: 1.0
+wandb:
+  run_name: v2-finetune-isolated-family-balanced
+  tags: [fingerprint-v2, ablation, official, family-balanced-ce]

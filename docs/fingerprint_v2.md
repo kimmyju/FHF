@@ -197,3 +197,20 @@ Interpretation matrix:
 - Strong pretrained probe but incorrect family/flat heads on frozen validation: targeted official-only head or fusion ablation is a plausible *future* training experiment, not a validated fix.
 
 Do **not** edit training configs, class labels, or the official validation for these two diagnostics. An independent frozen validation is for final evaluation, not selecting the best of many posthoc configurations. Both scripts are diagnostic only, and baseline checkpoints remain unchanged.
+
+## Family-balanced auxiliary CE ablation (Isolated fine-tune, NO pretraining change)
+
+The isolated model's frozen validation showed GLM 5.3/Flash frequently routed to Anthropic by the family head. To test whether provider frequency contributes, this experiment changes **only the auxiliary family cross-entropy term**. The original isolated fine-tune and its checkpoint are unchanged. Every epoch of `prompt_matched_full_coverage` uses every training example once, so model-balanced class counts still imply unequal provider counts. The class frequencies are computed from the **official TRAIN split only**, not held-out validation.
+
+Weights are `(N / (K*n_family)) ** power` (K=6), renormalized to training-row mean 1. `power: 1.0` is full inverse-frequency weighting. Loss reduction is `mean(weight[true_family] * cross_entropy(logits, family))` over the batch, avoiding normalization by the sum of the *batch's* varying family weights. The outer family loss multiplier stays 0.25; exact-model loss, flat loss, within-family contrastive, R-Drop, style perturbation, optimizer, sampler, frozen split, and checkpoint selection are unchanged.
+
+    git pull
+    CUDA_VISIBLE_DEVICES=2 python scripts/train.py --config configs/fingerprint_v2/finetune_family_balanced.yaml
+    CUDA_VISIBLE_DEVICES=2 python scripts/fingerprint_v2_glm_heads.py \\
+      --checkpoint outputs/fingerprint-v2/finetune-isolated-family-balanced/checkpoint \\
+      --out outputs/fingerprint-v2/glm-root-cause/heads-family-balanced
+    CUDA_VISIBLE_DEVICES=2 python scripts/fingerprint_v2_ensemble.py --mode validation \\
+      --checkpoint outputs/fingerprint-v2/finetune-isolated-family-balanced/checkpoint \\
+      --output outputs/fingerprint-v2/ensemble/validation_family_balanced.csv
+
+To compare neural-only under identical conditions, add `--neural-weight 1.0` and a distinct output path. Family weights and counts are in `outputs/fingerprint-v2/finetune-isolated-family-balanced/family_balance_report.json`; the resolved config snapshot logs the final weight vector in FAMILY_NAMES order. Check per-class recall and family-head accuracy **for all 18 labels**, not only GLM; a ZAI gain could come at a cost to Claude/OpenAI. Frozen validation is also used by the existing training pipeline to select the best epoch, so it is not a fully untouched final evaluation set and should not be used to tune the family-balance exponent. Repeat seeds and use a future independent holdout for final claims.
