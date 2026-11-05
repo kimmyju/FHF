@@ -25,7 +25,7 @@ def test_bias_fit_on_balanced_predictors():
     adjusted=apply_bias(probs,fit)
     np.testing.assert_allclose(adjusted.sum(1),1,atol=1e-6)
     result=calibrate_oof_cv(
-        probs,labels,[f"prompt-{i//18}" for i in range(len(labels))],
+        probs,labels,[f"prompt-{i%4}" for i in range(len(labels))],
         folds=4)
     assert result["base_bacc"]==1.0
     assert result["crossfit_calibrated_bacc"]==1.0

@@ -21,6 +21,7 @@ from fhf.model import FingerprintModel
 from fhf.labels import MODEL_NAMES, MODEL_TO_ID
 from fhf.metrics import report
 from fhf.v2_confusion import diagnose
+from fhf.v2_calibration import load_bias, apply_bias
 from fhf.v2_ensemble import select_lexical_weights, select_neural_weight, combine
 
 
@@ -52,7 +53,7 @@ def neural_probs(checkpoint, frame, batch_size=16, max_length=384,
 
 def run(mode, data, official_train, oof_file, classical_model, checkpoints,
         output, neural_weight=0.70, batch_size=16, max_length=384,
-        base_encoder_override=None, neural_oof_file=None):
+        base_encoder_override=None, neural_oof_file=None, bias_json=None):
     if mode not in ("validation","test"):
         raise ValueError("mode must be validation or test")
     if not len(data) or data.id.astype(str).duplicated().any():
@@ -80,6 +81,17 @@ def run(mode, data, official_train, oof_file, classical_model, checkpoints,
     neural=[neural_probs(p,data,batch_size,max_length,base_encoder_override)
             for p in checkpoints]
     fused=combine(neural,component,weights,neural_weight=neural_weight)
+    if bias_json:
+        bias_data = load_bias(bias_json)
+        if not np.isclose(float(bias_data["neural_weight"]), neural_weight):
+            raise ValueError("Calibration neural weight disagrees with current ensemble")
+        expected_weights = bias_data["lexical_weights"]
+        if set(expected_weights) != set(weights) or any(
+                not np.isclose(expected_weights[k], weights[k]) for k in weights):
+            raise ValueError("Calibration lexical weights disagree with current ensemble")
+        if len(neural) != 1 and neural_weight > 0:
+            raise ValueError("Calibrated neural ensemble currently supports exactly one checkpoint")
+        fused=apply_bias(fused,bias_data["biases"])
     predictions=np.asarray(MODEL_NAMES)[fused.argmax(axis=1)]
     output=Path(output)
     output.parent.mkdir(parents=True,exist_ok=True)
@@ -94,10 +106,11 @@ def run(mode, data, official_train, oof_file, classical_model, checkpoints,
         for i,name in enumerate(MODEL_NAMES):
             prediction[f"prob_{name}"]=fused[:,i]
         prediction.to_csv(output,index=False)
-        diagnose(prediction, output.parent / "diagnostics")
+        diagnose(prediction, output.parent / (output.stem + "_diagnostics"))
     summary={
         "mode":mode,"n":len(data),"output":str(output),
         "neural_weight":neural_weight,
+        "calibration_bias_json":str(bias_json) if bias_json else None,
         "num_neural_models":len(checkpoints),
         "lexical_weights_selected_on_train_oof":weights,
         "lexical_oof_bacc":oof_bacc,
@@ -126,6 +139,8 @@ def main():
     p.add_argument("--neural-weight",default="0.7",
                    help="Fixed 0..1 or auto with --neural-oof")
     p.add_argument("--neural-oof",default=None)
+    p.add_argument("--bias-json",default=None,
+                   help="OOF-learned class bias; must match neural/lexical mixture")
     p.add_argument("--batch-size",type=int,default=16)
     p.add_argument("--max-length",type=int,default=384)
     p.add_argument("--base-encoder-override",default=None)
@@ -133,11 +148,17 @@ def main():
     a=p.parse_args()
     path=a.data or ("outputs/dual-path-prompt-aware/val.csv"
                     if a.mode=="validation" else "data/test.csv")
-    output=a.output or ("outputs/fingerprint-v2/ensemble/validation.csv"
-                        if a.mode=="validation" else "outputs/fingerprint-v2/ensemble/submission.parquet")
+    if a.bias_json and a.output is None:
+        output = ("outputs/fingerprint-v2/ensemble/validation_calibrated.csv"
+                  if a.mode=="validation" else
+                  "outputs/fingerprint-v2/ensemble/submission_calibrated.parquet")
+    else:
+        output=a.output or ("outputs/fingerprint-v2/ensemble/validation.csv"
+                            if a.mode=="validation" else
+                            "outputs/fingerprint-v2/ensemble/submission.parquet")
     run(a.mode, load_csv(path,labeled=a.mode=="validation"),load_csv(a.train),
         a.oof,a.classical,a.checkpoint,output,a.neural_weight,
-        a.batch_size,a.max_length,a.base_encoder_override,a.neural_oof)
+        a.batch_size,a.max_length,a.base_encoder_override,a.neural_oof,a.bias_json)
 
 
 if __name__=="__main__":
