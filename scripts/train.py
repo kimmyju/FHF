@@ -21,6 +21,7 @@ from fhf.data import (
 from fhf.external_data import training_frames, write_external_audit
 from fhf.full_coverage import FullCoveragePromptFamilyBatchSampler
 from fhf.prompt_match import PromptMatchedFullCoverageBatchSampler
+from fhf.v2_prompt_safety import safe_prompt_ids
 from fhf.engine import fit, seed_everything
 from fhf.model import FingerprintModel
 from fhf.tracking import WandbTracker
@@ -89,9 +90,16 @@ def run_training(cfg):
         and float(cfg["losses"]["intra_contrastive"]["weight"]) > 0
         and cfg["losses"]["intra_contrastive"].get("mode", "standard") in ("prompt_aware", "within_family")
     )
+    effective_prompt_ids = None
+    threshold = train_cfg.get("prompt_match_max_group_size")
+    if prompt_aware and threshold is not None:
+        effective_prompt_ids, prompt_report = safe_prompt_ids(train, threshold)
+        print(f"Prompt-size sensitivity ablation: {json.dumps(prompt_report)}")
+        report_path = checkpoint_dir.parent / "prompt_safety_report.json"
+        report_path.write_text(json.dumps(prompt_report, indent=2), encoding="utf-8")
     training_ds = TextDataset(
         train, tokenizer, int(model_cfg["max_length"]), style_config=model.style_config,
-        include_prompt_id=prompt_aware,
+        include_prompt_id=prompt_aware, prompt_id_values=effective_prompt_ids,
     )
     valid_ds = TextDataset(
         val, tokenizer, int(model_cfg["max_length"]), style_config=model.style_config

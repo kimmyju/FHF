@@ -1,0 +1,18 @@
+# Sensitivity ablation: retain every response but neutralize unverified very
+# large prompt groups for sampler/contrastive learning only. Original prompt
+# IDs still define validation splits; all labels and response texts remain.
+extends: pretrain.yaml
+experiment: fingerprint-v2-pretrain-unverified-prompts-isolated
+paths:
+  train_split_csv: outputs/fingerprint-v2/pretrain-isolated/train.csv
+  validation_csv: outputs/fingerprint-v2/pretrain-isolated/val.csv
+  checkpoint_dir: outputs/fingerprint-v2/pretrain-isolated/checkpoint
+  history_json: outputs/fingerprint-v2/pretrain-isolated/history.json
+  config_snapshot: outputs/fingerprint-v2/pretrain-isolated/config.yaml
+  eval_csv: outputs/fingerprint-v2/pretrain-isolated/val.csv
+  eval_report: outputs/fingerprint-v2/pretrain-isolated/evaluation.json
+training:
+  prompt_match_max_group_size: 32
+wandb:
+  run_name: v2-pretrain-unverified-prompts-isolated
+  tags: [fingerprint-v2, sensitivity, prompt-id, unverified]

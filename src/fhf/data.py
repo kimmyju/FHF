@@ -40,7 +40,7 @@ def grouped_split(df, validation_fraction=0.2, seed=42):
 class TextDataset(Dataset):
     """Tokenize paragraphs lazily; optionally attach exact model and family IDs."""
     def __init__(self, df, tokenizer, max_length=384, style_config=None,
-                 include_prompt_id=False):
+                 include_prompt_id=False, prompt_id_values=None):
         self.df, self.tokenizer, self.max_length = df.reset_index(drop=True), tokenizer, max_length
         self.labels = [MODEL_TO_ID[x] for x in df.model] if 'model' in df else None
         self.prompt_ids = None
@@ -49,7 +49,11 @@ class TextDataset(Dataset):
                 raise ValueError("Prompt-aware training requires nonempty prompt_id")
             # The ids only need to agree *within the training split*.
             # Factorization is deterministic and does not expose validation prompts.
-            self.prompt_ids = pd.factorize(self.df.prompt_id.astype(str), sort=False)[0].tolist()
+            effective = (self.df.prompt_id.astype(str) if prompt_id_values is None
+                         else pd.Series(list(prompt_id_values), dtype="string"))
+            if len(effective) != len(self.df) or effective.isna().any() or effective.astype(str).str.strip().eq("").any():
+                raise ValueError("Effective prompt IDs must align with training rows")
+            self.prompt_ids = pd.factorize(effective.astype(str), sort=False)[0].tolist()
         style_config = style_config or {}
         self.style_features = None
         if style_config.get("enabled", False):

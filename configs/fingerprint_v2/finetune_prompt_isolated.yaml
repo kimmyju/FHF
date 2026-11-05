@@ -1,0 +1,16 @@
+# Compare against baseline official fine-tune starting from clean prompt ablation.
+# Official prompt IDs are untouched and trusted as official dataset group keys.
+extends: finetune.yaml
+experiment: fingerprint-v2-finetune-unverified-prompts-isolated
+paths:
+  initial_checkpoint: outputs/fingerprint-v2/pretrain-isolated/checkpoint
+  train_split_csv: outputs/fingerprint-v2/finetune-isolated/train.csv
+  validation_csv: outputs/fingerprint-v2/finetune-isolated/val.csv
+  checkpoint_dir: outputs/fingerprint-v2/finetune-isolated/checkpoint
+  history_json: outputs/fingerprint-v2/finetune-isolated/history.json
+  config_snapshot: outputs/fingerprint-v2/finetune-isolated/config.yaml
+  eval_csv: outputs/fingerprint-v2/finetune-isolated/val.csv
+  eval_report: outputs/fingerprint-v2/finetune-isolated/evaluation.json
+wandb:
+  run_name: v2-finetune-unverified-prompts-isolated
+  tags: [fingerprint-v2, sensitivity, official, prompt-id]
