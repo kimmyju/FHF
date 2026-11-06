@@ -116,9 +116,15 @@ class GatedStyleFusion(nn.Module):
         nn.init.constant_(self.gate.bias, -2.0)
 
     def forward(self, contextual, style_features, noise_std=0.0):
-        style_features = style_features.to(dtype=contextual.dtype)
+        # A cached fp16 encoder can coexist with an fp32 style head.
+        # LayerNorm requires its input to match the head's parameter dtype
+        # when evaluation runs outside autocast.
+        style_dtype = self.style_encoder[0].weight.dtype
+        style_features = style_features.to(device=contextual.device, dtype=style_dtype)
         style = self.style_encoder(style_features)
         if noise_std > 0 and self.training:
             style = style + torch.randn_like(style) * noise_std
+        # Keep the concatenation and residual path in one dtype.
+        contextual = contextual.to(dtype=style.dtype)
         gate = torch.sigmoid(self.gate(torch.cat((contextual, style), dim=-1)))
         return self.norm(contextual + gate * style), gate.mean()

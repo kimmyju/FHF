@@ -214,3 +214,15 @@ Weights are `(N / (K*n_family)) ** power` (K=6), renormalized to training-row me
       --output outputs/fingerprint-v2/ensemble/validation_family_balanced.csv
 
 To compare neural-only under identical conditions, add `--neural-weight 1.0` and a distinct output path. Family weights and counts are in `outputs/fingerprint-v2/finetune-isolated-family-balanced/family_balance_report.json`; the resolved config snapshot logs the final weight vector in FAMILY_NAMES order. Check per-class recall and family-head accuracy **for all 18 labels**, not only GLM; a ZAI gain could come at a cost to Claude/OpenAI. Frozen validation is also used by the existing training pipeline to select the best epoch, so it is not a fully untouched final evaluation set and should not be used to tune the family-balance exponent. Repeat seeds and use a future independent holdout for final claims.
+
+
+## DeBERTa mixed fp16/fp32 validation fix
+
+Some cached DeBERTa-v3-large weights can produce fp16 hidden activations while custom style fusion has fp32 LayerNorm weights. Training uses autocast, but validation and standalone evaluation call model.forward without autocast. The former GatedStyleFusion.forward cast style features to the fp16 backbone output, potentially causing LayerNorm dtype mismatch.
+
+The fix uses the style head's own LayerNorm weight dtype for style features and casts contextual activations to the style branch's output dtype before fusion. Existing architectures, weights, optimizer, dataset, and experiment paths stay the same. CPU tests cover mixed fp16/fp32 activations with no autocast.
+
+    git pull
+    CUDA_VISIBLE_DEVICES=2 python scripts/train.py --config configs/fingerprint_v2/deberta.yaml
+
+The previous run terminated before writing a validated best checkpoint. If there is no saved optimizer/checkpoint state from epoch 1, the run must restart at epoch 1; this change does not retroactively recover unsaved training work.
