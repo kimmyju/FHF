@@ -14,3 +14,12 @@ checkpoints/
 *.parquet
 .env
 .ipynb_checkpoints/
+# NAS compatibility links and local runtime directories.
+/data
+/outputs
+/checkpoints
+/results
+/csv
+/cache
+/wandb
+/migration_manifest.json

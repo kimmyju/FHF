@@ -9,6 +9,7 @@ import gc
 import hashlib
 import json
 import math
+import os
 import random
 import time
 from pathlib import Path
@@ -280,11 +281,14 @@ def fit_fold(train, valid, cfg, out, external=None):
             torch.cuda.empty_cache()
 
 
-def run(train, cfg, output, valid=None, external=None, fold_only=None):
+def run(train, cfg, output, valid=None, external=None, fold_only=None, checkpoint_root=None):
     train = validate(train)
     out = Path(output)
     if out.exists():
         raise ValueError("Output exists; use a new path to prevent stale-fold mixing")
+    checkpoint_root = Path(checkpoint_root) if checkpoint_root is not None else out
+    if checkpoint_root != out and checkpoint_root.exists():
+        raise ValueError("Checkpoint directory exists; choose a fresh run name")
     if not 0 <= float(cfg["lexical_weight"]) <= 1:
         raise ValueError("lexical_weight must be between 0 and 1")
     if valid is not None:
@@ -312,7 +316,7 @@ def run(train, cfg, output, valid=None, external=None, fold_only=None):
         if fold_only is not None and fold != fold_only:
             continue
         name = f"fold-{fold}"
-        neural, lexical = fit_fold(fit, hold, {**cfg, "seed": cfg["seed"] + fold}, out / name, external)
+        neural, lexical = fit_fold(fit, hold, {**cfg, "seed": cfg["seed"] + fold}, checkpoint_root / name, external)
         w = float(cfg["lexical_weight"])
         blend = (1 - w) * neural + w * lexical
         y = hold.model.map(MODEL_TO_ID).to_numpy()
@@ -323,7 +327,7 @@ def run(train, cfg, output, valid=None, external=None, fold_only=None):
             for j, label in enumerate(MODEL_NAMES):
                 rows[f"{prefix}::{label}"] = p[:, j]
         all_rows.append(rows)
-        fold_names.append(name)
+        fold_names.append(os.path.relpath(checkpoint_root / name, out))
         dump(out / "fold_metrics.json", reports)
     oof = pd.concat(all_rows, ignore_index=True)
     oof.to_csv(out / "predictions.csv", index=False)

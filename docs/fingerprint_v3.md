@@ -1,5 +1,9 @@
 # Fingerprint v3: decoder attribution experiment
 
+Storage now defaults to NAS. First follow [NAS migration](nas_storage.md).
+Results and checkpoints are separate sibling directories; preserve that layout
+when uploading a model bundle.
+
 **Target: improve toward 0.70 BAcc. No 0.70 result is claimed.** This branch is
 based on fingerprint-v2 commit b38987d and keeps the main/v2 entry points intact.
 It adds a genuinely different representation, not another loss to the old model.
@@ -68,9 +72,9 @@ resumed silently.
 
 ```bash
 CUDA_VISIBLE_DEVICES=2 python scripts/fingerprint_v3.py train \
-  --train outputs/dual-path-prompt-aware/train_split.csv \
-  --valid outputs/dual-path-prompt-aware/val.csv \
-  --out outputs/fingerprint-v3/qwen4b-holdout --wandb
+  --train /media/NAS/USERS/yeju/FHF/csv/splits/dual-path-prompt-aware/train_split.csv \
+  --valid /media/NAS/USERS/yeju/FHF/csv/splits/dual-path-prompt-aware/val.csv \
+  --out qwen4b-holdout --wandb
 ```
 
 Read `metrics.json`: neural / lexical / blend BAcc, family accuracy,
@@ -88,10 +92,10 @@ mixed ntl_v2/ntl_v3 directory and does not relabel historical models.
 
 ```bash
 CUDA_VISIBLE_DEVICES=2 python scripts/fingerprint_v3.py train \
-  --train outputs/dual-path-prompt-aware/train_split.csv \
-  --valid outputs/dual-path-prompt-aware/val.csv \
+  --train /media/NAS/USERS/yeju/FHF/csv/splits/dual-path-prompt-aware/train_split.csv \
+  --valid /media/NAS/USERS/yeju/FHF/csv/splits/dual-path-prompt-aware/val.csv \
   --external /absolute/path/to/audited_external.csv \
-  --out outputs/fingerprint-v3/qwen4b-external-holdout --wandb
+  --out qwen4b-external-holdout --wandb
 ```
 
 Default warm-up: max 1,000 rows per exact label, one epoch, then four official-only
@@ -110,11 +114,11 @@ Once the architecture/epochs are fixed, use all 2,699 OFFICIAL rows:
 ```bash
 # Budget pilot; this is labeled single_fold_pilot, never full OOF.
 CUDA_VISIBLE_DEVICES=2 python scripts/fingerprint_v3.py train \
-  --train data/train.csv --fold-only 0 --out outputs/fingerprint-v3/pilot
+  --train /media/NAS/USERS/yeju/FHF/csv/train.csv --fold-only 0 --out pilot
 
 # All five independent folds; no external data by default.
 CUDA_VISIBLE_DEVICES=2 python scripts/fingerprint_v3.py train \
-  --train data/train.csv --out outputs/fingerprint-v3/qwen4b-cv --wandb
+  --train /media/NAS/USERS/yeju/FHF/csv/train.csv --out qwen4b-cv --wandb
 ```
 
 Each fold starts from the pretrained base. Five adapters are averaged at test
@@ -127,8 +131,8 @@ The pipeline intentionally does not learn 18 per-class blend knobs on 540 rows.
 
 ## 4. Offline Kaggle inference
 
-Upload the chosen output bundle (manifest + fold adapters/tokenizers/configs +
-lexical models), this source package, offline dependency wheels, and ONE complete
+Upload both results/<run> (manifest and reports) and checkpoints/<run>
+(fold adapters/tokenizers/configs and lexical models), retaining their relative layout, this source package, offline dependency wheels, and ONE complete
 Qwen3-4B base snapshot as Kaggle datasets. Use the base revision recorded in
 `fold-0/config.json`; never substitute an instruct/base/8B checkpoint. Do not put
 training/validation files into the inference notebook inputs unless needed.
@@ -137,7 +141,7 @@ The tokenizer and the trained score head are saved with each fold adapter.
 ```bash
 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
 python scripts/fingerprint_v3.py predict \
-  --bundle /kaggle/input/fhf-v3/qwen4b-cv \
+  --bundle /kaggle/input/fhf-v3/results/qwen4b-cv \
   --base /kaggle/input/qwen3-4b \
   --test /kaggle/input/competitions/name-that-llm/test.csv \
   --batch-size 4 --out /kaggle/working/submission.parquet

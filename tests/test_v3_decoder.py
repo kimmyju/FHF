@@ -66,7 +66,8 @@ def test_tiny_qwen_train_save_offline_infer(tmp_path):
            "lora_rank": 2, "lora_alpha": 4, "lora_dropout": 0.,
            "gradient_checkpointing": True, "lexical_weight": .15}
     bundle = tmp_path / "bundle"
-    summary = run(frame(), cfg, bundle, fold_only=0)
+    checkpoint_root = tmp_path / "checkpoints"
+    summary = run(frame(), cfg, bundle, fold_only=0, checkpoint_root=checkpoint_root)
     assert summary["evaluation"] == "single_fold_pilot"
     predictions = pd.read_csv(bundle / "predictions.csv", dtype={"id": str})
     source = frame().set_index("id").loc[predictions.id].reset_index()
@@ -77,7 +78,7 @@ def test_tiny_qwen_train_save_offline_infer(tmp_path):
     assert submitted.model.tolist() == np.asarray(MODEL_NAMES)[probs.argmax(1)].tolist()
     assert submitted.id.tolist() == source.id.tolist()
     assert list(submitted.columns) == ["id", "model"]
-    assert (bundle / "fold-0" / "adapter" / "adapter_model.safetensors").exists()
+    assert (checkpoint_root / "fold-0" / "adapter" / "adapter_model.safetensors").exists()
     with pytest.raises(ValueError, match="Output exists"):
         run(frame(), cfg, bundle)
     manifest = json.loads((bundle / "manifest.json").read_text())

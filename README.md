@@ -786,3 +786,10 @@ class-balanced flat CE, prompt-grouped CV, optional audited external warm-up,
 and offline fold/character ensemble are available in
 [docs/fingerprint_v3.md](docs/fingerprint_v3.md). Start with the frozen holdout
 comparison before the five-fold run. **0.70 is a target, not a measured result.**
+
+### NAS storage
+
+The v3 CLI now defaults to `/media/NAS/USERS/yeju/FHF`, with separate `csv`,
+`checkpoints`, `results` and `cache` directories. See [NAS migration instructions](docs/nas_storage.md)
+for verified data transfer, preservation of frozen CSV splits and cleanup of old
+local training artifacts. Run the migration on the machine that mounts your NAS.
