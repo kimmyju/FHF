@@ -23,12 +23,19 @@ model:
     bias: none
     initial_adapter: null
     bundle_base_encoder: false
+  
+losses:
+  family:
+    class_balance:
+      enabled: true
+      power: 1.0
+      
 training:
   frozen_split: true
   sampler: prompt_matched_full_coverage
   steps_per_epoch: null
-  epochs: 12
-  learning_rate: 0.00002
+  epochs: 15
+  learning_rate: 0.0001 #0.00002
   batch_families: 2
   models_per_family: 2
   samples_per_model: 2
