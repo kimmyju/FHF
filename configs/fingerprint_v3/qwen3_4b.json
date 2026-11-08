@@ -1,0 +1,23 @@
+{
+  "model": "Qwen/Qwen3-4B",
+  "revision": "main",
+  "max_length": 768,
+  "seed": 42,
+  "folds": 5,
+  "epochs": 4,
+  "batch_size": 4,
+  "accumulation": 8,
+  "learning_rate": 0.0001,
+  "head_learning_rate": 0.0003,
+  "weight_decay": 0.01,
+  "warmup_ratio": 0.1,
+  "lora_rank": 32,
+  "lora_alpha": 64,
+  "lora_dropout": 0.05,
+  "gradient_checkpointing": true,
+  "lexical_weight": 0.15,
+  "external_epochs": 1,
+  "external_per_class": 1000,
+  "wandb": false,
+  "wandb_project": "fhf-name-that-llm"
+}

@@ -778,3 +778,11 @@ To try batch 64, append `--set training.samples_per_model=8` to the
 training command. The model does multiple forwards (style perturbation and
 R-Drop); check memory. Increasing batch size changes optimization, not just
 speed. No GPU training has been run by this repository change.
+
+## Fingerprint v3: direct decoder attribution
+
+An independent Qwen3-4B LoRA classifier, raw-text head/tail tokenization,
+class-balanced flat CE, prompt-grouped CV, optional audited external warm-up,
+and offline fold/character ensemble are available in
+[docs/fingerprint_v3.md](docs/fingerprint_v3.md). Start with the frozen holdout
+comparison before the five-fold run. **0.70 is a target, not a measured result.**
