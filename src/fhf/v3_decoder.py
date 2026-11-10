@@ -136,14 +136,30 @@ def lexical_predict(model, texts):
 
 def get_base(path, cfg, tokenizer, offline=False):
     import torch
-    from transformers import AutoModelForSequenceClassification
+    from transformers import AutoConfig, AutoModelForSequenceClassification
     dtype = torch.float32
     if torch.cuda.is_available():
         dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else (torch.float16 if offline else torch.float32)
-    model = AutoModelForSequenceClassification.from_pretrained(
-        path, num_labels=18, torch_dtype=dtype, local_files_only=offline,
-        revision=cfg.get("revision", "main"), attn_implementation="sdpa",
-        id2label=dict(enumerate(MODEL_NAMES)), label2id=MODEL_TO_ID)
+    pooling = cfg.get("pooling", "eos")
+    if pooling not in ("eos", "eos_mean"):
+        raise ValueError(f"Unknown pooling: {pooling}")
+    config = AutoConfig.from_pretrained(path, local_files_only=offline,
+                                       revision=cfg.get("revision", "main"))
+    config.num_labels = 18
+    config.id2label = dict(enumerate(MODEL_NAMES))
+    config.label2id = MODEL_TO_ID
+    cls = AutoModelForSequenceClassification
+    if pooling == "eos_mean":
+        if config.model_type != "qwen3":
+            raise ValueError("EOS-mean classifier currently supports Qwen3 only")
+        from .v3_pooling import Qwen3EOSMeanClassifier
+        cls = Qwen3EOSMeanClassifier
+        config.pooling_head_dim = int(cfg.get("pooling_head_dim", 512))
+        config.pooling_dropout = float(cfg.get("pooling_dropout", 0.1))
+        config.pooling_special_ids = list(tokenizer.all_special_ids)
+    model = cls.from_pretrained(
+        path, config=config, torch_dtype=dtype, local_files_only=offline,
+        revision=cfg.get("revision", "main"), attn_implementation="sdpa")
     model.config.pad_token_id = tokenizer.pad_token_id
     model.config.use_cache = False
     return model

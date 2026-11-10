@@ -39,7 +39,8 @@ def test_head_tail_and_eos():
     assert report["truncated"] == 1
 
 
-def test_tiny_qwen_train_save_offline_infer(tmp_path):
+@pytest.mark.parametrize("pooling", ["eos", "eos_mean"])
+def test_tiny_qwen_train_save_offline_infer(tmp_path, pooling):
     import torch
     from tokenizers import Tokenizer
     from tokenizers.models import WordLevel
@@ -64,13 +65,24 @@ def test_tiny_qwen_train_save_offline_infer(tmp_path):
            "learning_rate": 1e-3, "head_learning_rate": 1e-3,
            "weight_decay": .01, "warmup_ratio": .1,
            "lora_rank": 2, "lora_alpha": 4, "lora_dropout": 0.,
-           "gradient_checkpointing": True, "lexical_weight": .15}
+           "gradient_checkpointing": True, "lexical_weight": .15,
+           "pooling": pooling, "pooling_head_dim": 12, "pooling_dropout": 0.0}
     bundle = tmp_path / "bundle"
     checkpoint_root = tmp_path / "checkpoints"
     summary = run(frame(), cfg, bundle, fold_only=0, checkpoint_root=checkpoint_root)
     assert summary["evaluation"] == "single_fold_pilot"
     predictions = pd.read_csv(bundle / "predictions.csv", dtype={"id": str})
     source = frame().set_index("id").loc[predictions.id].reset_index()
+    from peft import PeftModel
+    from fhf.v3_decoder import get_base, predict_neural
+    saved = checkpoint_root / "fold-0"
+    loaded_cfg = json.loads((saved / "config.json").read_text())
+    restored = PeftModel.from_pretrained(
+        get_base(str(base), loaded_cfg, tokenizer, offline=True), saved / "adapter")
+    rows, _ = encode(source.text, tokenizer, 16)
+    restored_probs = predict_neural(restored, rows, tokenizer, 5)
+    expected = predictions[[f"neural::{name}" for name in MODEL_NAMES]].to_numpy()
+    np.testing.assert_allclose(restored_probs, expected, atol=1e-6, rtol=1e-5)
     output = tmp_path / "submission.parquet"
     infer(bundle, source, str(base), output, batch_size=5)
     submitted = pd.read_parquet(output)
@@ -95,3 +107,23 @@ def test_external_overlap_filter_and_cap():
     assert len(cleaned) == 36
     assert set(cleaned.text).isdisjoint(set(official.text))
     assert cleaned.model.value_counts().eq(2).all()
+
+
+def test_content_pooling_masks_and_gradients():
+    import torch
+    from fhf.v3_pooling import pool_content
+    h = torch.tensor([[[99., 99.], [2., 4.], [4., 8.], [7., 9.], [88., 88.]]], requires_grad=True)
+    ids = torch.tensor([[5, 2, 3, 1, 0]])
+    eos, mean = pool_content(h, ids, torch.tensor([[1, 1, 1, 1, 0]]), [0, 1, 5])
+    torch.testing.assert_close(eos, torch.tensor([[7., 9.]]))
+    torch.testing.assert_close(mean, torch.tensor([[3., 6.]]))
+    (eos.sum() + mean.sum()).backward()
+    torch.testing.assert_close(h.grad[0, 0], torch.zeros(2))
+    torch.testing.assert_close(h.grad[0, 4], torch.zeros(2))
+    # Moving padding to the left must not affect either pool.
+    e2, m2 = pool_content(h.detach()[:, [4, 0, 1, 2, 3]], ids[:, [4, 0, 1, 2, 3]],
+                         torch.tensor([[0, 1, 1, 1, 1]]), [0, 1, 5])
+    torch.testing.assert_close(eos, e2)
+    torch.testing.assert_close(mean, m2)
+    empty_e, empty_m = pool_content(h[:, :1], torch.tensor([[1]]), torch.ones(1, 1), [1])
+    torch.testing.assert_close(empty_e, empty_m)
