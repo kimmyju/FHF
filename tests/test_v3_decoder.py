@@ -39,7 +39,7 @@ def test_head_tail_and_eos():
     assert report["truncated"] == 1
 
 
-@pytest.mark.parametrize("pooling", ["eos", "eos_mean"])
+@pytest.mark.parametrize("pooling", ["eos", "eos_mean", "eos_style"])
 def test_tiny_qwen_train_save_offline_infer(tmp_path, pooling):
     import torch
     from tokenizers import Tokenizer
@@ -66,7 +66,14 @@ def test_tiny_qwen_train_save_offline_infer(tmp_path, pooling):
            "weight_decay": .01, "warmup_ratio": .1,
            "lora_rank": 2, "lora_alpha": 4, "lora_dropout": 0.,
            "gradient_checkpointing": True, "lexical_weight": .15,
-           "pooling": pooling, "pooling_head_dim": 12, "pooling_dropout": 0.0}
+           "pooling": pooling, "pooling_head_dim": 12, "pooling_dropout": 0.0,
+           "style_feature_version": 1, "style_hidden_dim": 8, "style_dropout": 0.0}
+    if pooling == "eos_style":
+        from fhf.v3_decoder import get_base
+        initial = get_base(str(base), cfg, tokenizer, offline=True)
+        assert initial.score.style[-1].weight.count_nonzero() == 0
+        assert initial.score.style[-1].bias.count_nonzero() == 0
+        del initial
     bundle = tmp_path / "bundle"
     checkpoint_root = tmp_path / "checkpoints"
     summary = run(frame(), cfg, bundle, fold_only=0, checkpoint_root=checkpoint_root)
@@ -79,7 +86,10 @@ def test_tiny_qwen_train_save_offline_infer(tmp_path, pooling):
     loaded_cfg = json.loads((saved / "config.json").read_text())
     restored = PeftModel.from_pretrained(
         get_base(str(base), loaded_cfg, tokenizer, offline=True), saved / "adapter")
-    rows, _ = encode(source.text, tokenizer, 16)
+    rows, _ = encode(source.text, tokenizer, 16, loaded_cfg)
+    if pooling == "eos_style":
+        head = restored.base_model.model.score.modules_to_save["default"]
+        assert head.style[-1].weight.count_nonzero() > 0
     restored_probs = predict_neural(restored, rows, tokenizer, 5)
     expected = predictions[[f"neural::{name}" for name in MODEL_NAMES]].to_numpy()
     np.testing.assert_allclose(restored_probs, expected, atol=1e-6, rtol=1e-5)
@@ -127,3 +137,26 @@ def test_content_pooling_masks_and_gradients():
     torch.testing.assert_close(mean, m2)
     empty_e, empty_m = pool_content(h[:, :1], torch.tensor([[1]]), torch.ones(1, 1), [1])
     torch.testing.assert_close(empty_e, empty_m)
+
+
+def test_style_features_and_zero_residual():
+    import torch
+    from fhf.v3_style import FEATURE_NAMES, style_features, EOSStyleHead
+    for text in ['', '!!!', '한글 문장입니다.\n다음 문장.', '# Title\n- A short item!\n\n123']:
+        v = style_features(text)
+        assert len(v) == len(FEATURE_NAMES) == 25
+        assert np.isfinite(v).all()
+        assert all(0 <= x <= 1 for x in v)
+        assert v == style_features(text)
+    assert style_features('Hello world.') != style_features('HELLO WORLD!!!\n')
+    head = EOSStyleHead(8, 12, 18, 0.)
+    head.zero_residual()
+    eos = torch.randn(2, 8)
+    features = torch.tensor([style_features('Hello world.'), style_features('Hi!')])
+    torch.testing.assert_close(head(eos, features), head.eos(eos), rtol=0, atol=0)
+    opt = torch.optim.SGD(head.parameters(), lr=.1)
+    loss = torch.nn.functional.cross_entropy(head(eos, features), torch.tensor([0, 1]))
+    loss.backward()
+    assert head.style[-1].weight.grad.abs().sum() > 0
+    opt.step()
+    assert not torch.equal(head(eos, features), head.eos(eos))

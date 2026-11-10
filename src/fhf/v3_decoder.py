@@ -89,7 +89,7 @@ def metrics(y, probabilities):
             "confusion": matrix.tolist(), "labels": MODEL_NAMES}
 
 
-def encode(texts, tokenizer, max_length):
+def encode(texts, tokenizer, max_length, cfg=None):
     if max_length < 4:
         raise ValueError("max_length must be >=4")
     result, lengths = [], []
@@ -101,7 +101,11 @@ def encode(texts, tokenizer, max_length):
             head = (budget + 1) // 2
             tokens = tokens[:head] + tokens[-(budget - head):]
         tokens = tokens + [tokenizer.eos_token_id]
-        result.append({"input_ids": tokens, "attention_mask": [1] * len(tokens)})
+        row = {"input_ids": tokens, "attention_mask": [1] * len(tokens)}
+        if (cfg or {}).get("pooling") == "eos_style":
+            from .v3_style import style_features
+            row["style_features"] = style_features(text)
+        result.append(row)
     return result, {"n": len(lengths), "truncated": int(sum(n > max_length for n in lengths)),
                     "token_length_quantiles": np.quantile(lengths, [0, .5, .9, .99, 1]).tolist()}
 
@@ -141,7 +145,7 @@ def get_base(path, cfg, tokenizer, offline=False):
     if torch.cuda.is_available():
         dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else (torch.float16 if offline else torch.float32)
     pooling = cfg.get("pooling", "eos")
-    if pooling not in ("eos", "eos_mean"):
+    if pooling not in ("eos", "eos_mean", "eos_style"):
         raise ValueError(f"Unknown pooling: {pooling}")
     config = AutoConfig.from_pretrained(path, local_files_only=offline,
                                        revision=cfg.get("revision", "main"))
@@ -157,12 +161,36 @@ def get_base(path, cfg, tokenizer, offline=False):
         config.pooling_head_dim = int(cfg.get("pooling_head_dim", 512))
         config.pooling_dropout = float(cfg.get("pooling_dropout", 0.1))
         config.pooling_special_ids = list(tokenizer.all_special_ids)
+    if pooling == "eos_style":
+        from .v3_style import Qwen3EOSStyleClassifier, FEATURE_VERSION
+        if config.model_type != "qwen3":
+            raise ValueError("EOS-style requires Qwen3")
+        if cfg.get("style_feature_version") != FEATURE_VERSION:
+            raise ValueError("Missing/unsupported style_feature_version")
+        config.style_hidden_dim = int(cfg.get("style_hidden_dim", 128))
+        config.style_dropout = float(cfg.get("style_dropout", 0.1))
+        cls = Qwen3EOSStyleClassifier
     model = cls.from_pretrained(
         path, config=config, torch_dtype=dtype, local_files_only=offline,
         revision=cfg.get("revision", "main"), attn_implementation="sdpa")
+    if pooling == "eos_style":
+        # HF initializes missing weights while loading; zero AFTER that pass.
+        # The trained head is restored by PeftModel afterwards at inference.
+        model.score.zero_residual()
     model.config.pad_token_id = tokenizer.pad_token_id
     model.config.use_cache = False
     return model
+
+
+def collate_rows(rows, tokenizer):
+    import torch
+    tokens = [{k: v for k, v in row.items() if k != "style_features"} for row in rows]
+    batch = tokenizer.pad(tokens, return_tensors="pt")
+    if any("style_features" in row for row in rows):
+        if not all("style_features" in row for row in rows):
+            raise ValueError("Mixed style and non-style rows")
+        batch["style_features"] = torch.tensor([r["style_features"] for r in rows], dtype=torch.float32)
+    return batch
 
 
 def predict_neural(model, rows, tokenizer, batch_size):
@@ -171,7 +199,7 @@ def predict_neural(model, rows, tokenizer, batch_size):
     parts = []
     with torch.inference_mode():
         for start in range(0, len(rows), batch_size):
-            batch = tokenizer.pad(rows[start:start + batch_size], return_tensors="pt")
+            batch = collate_rows(rows[start:start + batch_size], tokenizer)
             batch = {k: v.to(model.device) for k, v in batch.items()}
             parts.append(model(**batch).logits.float().softmax(-1).cpu().numpy())
     return np.concatenate(parts)
@@ -210,7 +238,7 @@ def train_stage(model, rows, labels, tokenizer, cfg, epochs, tracker=None, stage
             optimizer.zero_grad(set_to_none=True)
             for offset in range(0, len(window), batch_size):
                 ix = window[offset:offset + batch_size]
-                batch = tokenizer.pad([rows[i] for i in ix], return_tensors="pt")
+                batch = collate_rows([rows[i] for i in ix], tokenizer)
                 batch = {k: v.to(model.device) for k, v in batch.items()}
                 target = torch.tensor(labels[ix], dtype=torch.long, device=model.device)
                 logits = model(**batch).logits.float()
@@ -249,8 +277,8 @@ def fit_fold(train, valid, cfg, out, external=None):
         raise ValueError("Use a decoder tokenizer with distinct PAD and EOS tokens")
     tokenizer.padding_side = "right"
     tokenizer.save_pretrained(out / "tokenizer")
-    tr, audit = encode(train.text, tokenizer, int(cfg["max_length"]))
-    va, va_audit = encode(valid.text, tokenizer, int(cfg["max_length"]))
+    tr, audit = encode(train.text, tokenizer, int(cfg["max_length"]), cfg)
+    va, va_audit = encode(valid.text, tokenizer, int(cfg["max_length"]), cfg)
     dump(out / "tokenization.json", {"train": audit, "validation": va_audit})
     model = get_base(cfg["model"], cfg, tokenizer)
     resolved_revision = getattr(model.config, "_commit_hash", None)
@@ -270,11 +298,11 @@ def fit_fold(train, valid, cfg, out, external=None):
     if cfg.get("wandb"):
         import wandb
         tracker = wandb.init(project=cfg["wandb_project"], name=out.name, config=cfg, reinit=True,
-                             tags=["fingerprint-v3", "decoder", "flat-ce"])
+                             tags=["fingerprint-v3", "decoder", "flat-ce", cfg.get("pooling", "eos")])
     history = []
     try:
         if external is not None:
-            ex, ex_audit = encode(external.text, tokenizer, int(cfg["max_length"]))
+            ex, ex_audit = encode(external.text, tokenizer, int(cfg["max_length"]), cfg)
             dump(out / "external_tokenization.json", ex_audit)
             history += train_stage(model, ex, external.model.map(MODEL_TO_ID), tokenizer, cfg,
                                    int(cfg["external_epochs"]), tracker, "external")
@@ -381,7 +409,7 @@ def infer(bundle, test, base, output, batch_size=4, lexical_weight=None):
         tokenizer = AutoTokenizer.from_pretrained(path / "tokenizer", local_files_only=True)
         model = PeftModel.from_pretrained(get_base(base, cfg, tokenizer, offline=True), path / "adapter", local_files_only=True)
         model.to("cuda" if torch.cuda.is_available() else "cpu")
-        rows, _ = encode(test.text, tokenizer, int(cfg["max_length"]))
+        rows, _ = encode(test.text, tokenizer, int(cfg["max_length"]), cfg)
         neural = predict_neural(model, rows, tokenizer, batch_size)
         lex = lexical_predict(joblib.load(path / "lexical.joblib"), test.text)
         total += (1 - weight) * neural + weight * lex
