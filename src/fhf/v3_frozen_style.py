@@ -26,7 +26,7 @@ def make_head(cfg):
     return head
 
 
-def frozen_logits(fold, texts, batch_size, base=None):
+def frozen_logits(fold, texts, batch_size, base=None, split_at=None):
     from peft import PeftModel
     from transformers import AutoTokenizer
     if batch_size < 1:
@@ -45,11 +45,16 @@ def frozen_logits(fold, texts, batch_size, base=None):
     assert not any(p.requires_grad for p in model.parameters())
     model.to('cuda' if torch.cuda.is_available() else 'cpu')
     rows, _ = encode(texts, tokenizer, int(cfg['max_length']), cfg)
+    # Preserve original validation batch boundaries and therefore padding shapes.
+    if split_at is not None and not 0 < split_at < len(rows):
+        raise ValueError('split_at must separate two nonempty datasets')
+    boundaries = [0, len(rows)] if split_at is None else [0, split_at, len(rows)]
     parts = []
     with torch.inference_mode():
-        for start in range(0, len(rows), batch_size):
-            batch = collate_rows(rows[start:start + batch_size], tokenizer)
-            parts.append(model(**{k: v.to(model.device) for k, v in batch.items()}).logits.float().cpu())
+        for lower, upper in zip(boundaries, boundaries[1:]):
+            for start in range(lower, upper, batch_size):
+                batch = collate_rows(rows[start:min(start + batch_size, upper)], tokenizer)
+                parts.append(model(**{k: v.to(model.device) for k, v in batch.items()}).logits.float().cpu())
     del model
     gc.collect()
     if torch.cuda.is_available():
@@ -156,14 +161,39 @@ def train_frozen(source, train, valid, cfg, output, base=None, tracker=None):
     dump(out / 'provenance.json', {'source_bundle': str(source), 'source_fold': str(fold),
                                   'source_metrics': original['neural'], 'data_sha256': data_hash})
     print('Restoring frozen EOS; caching train and validation logits (no backward through EOS).', flush=True)
-    logits = frozen_logits(saved, pd.concat([train.text, valid.text]), int(cfg['inference_batch_size']), base)
+    # The original v3 run evaluated valid alone with source_cfg['batch_size'].
+    # Do not shift validation batches by the training row count or override size.
+    restore_batch_size = int(source_cfg['batch_size'])
+    logits = frozen_logits(saved, pd.concat([train.text, valid.text]), restore_batch_size,
+                           base, split_at=len(train))
     tr, va = logits[:len(train)], logits[len(train):]
     reference = pd.read_csv(source / 'predictions.csv', dtype={'id': str}).set_index('id').loc[valid.id]
     expected = reference[[f'neural::{n}' for n in MODEL_NAMES]].to_numpy()
     actual = probabilities(va)
-    audit = {'argmax_mismatches': int((expected.argmax(1) != actual.argmax(1)).sum()),
-             'max_probability_difference': float(np.max(np.abs(expected - actual))),
+    y = valid.model.map(MODEL_TO_ID).to_numpy()
+    difference = np.abs(expected - actual)
+    changed = expected.argmax(1) != actual.argmax(1)
+    import transformers
+    import peft
+    audit = {'argmax_mismatches': int(changed.sum()),
+             'max_probability_difference': float(difference.max()),
+             'probability_difference_quantiles': np.quantile(difference, [0.5, 0.9, 0.99, 1.]).tolist(),
+             'original_bacc': metrics(y, expected)['balanced_accuracy'],
+             'restored_bacc': metrics(y, actual)['balanced_accuracy'],
+             'source_batch_size': restore_batch_size,
+             'validation_batches_separate': True,
+             'model': source_cfg['model'], 'revision': source_cfg.get('revision'),
+             'torch_version': torch.__version__, 'transformers_version': transformers.__version__,
+             'peft_version': peft.__version__,
+             'device': torch.cuda.get_device_name() if torch.cuda.is_available() else 'cpu',
              'all_eos_parameters_frozen': True}
+    differences = valid[['id', 'model']].copy()
+    differences['original_prediction'] = np.asarray(MODEL_NAMES)[expected.argmax(1)]
+    differences['restored_prediction'] = np.asarray(MODEL_NAMES)[actual.argmax(1)]
+    differences['max_probability_difference'] = difference.max(1)
+    differences['original_top2_margin'] = np.diff(np.sort(expected, axis=1)[:, -2:], axis=1).ravel()
+    differences['restored_top2_margin'] = np.diff(np.sort(actual, axis=1)[:, -2:], axis=1).ravel()
+    differences.loc[changed].to_csv(out / 'restore_mismatches.csv', index=False)
     dump(out / 'restore_audit.json', audit)
     if audit['argmax_mismatches'] or not np.allclose(actual, expected, atol=2e-3, rtol=2e-3):
         raise ValueError('Restored EOS predictions differ from source; inspect restore_audit.json before training')

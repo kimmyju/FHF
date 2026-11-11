@@ -33,8 +33,8 @@ Optional `FHF_BASE_MODEL=/absolute/path/to/local/Qwen3-8B` uses local base weigh
 
 1. Check the original run is one frozen-holdout EOS fold with the canonical 18-label order. Match training IDs/prompts/labels and the original full validation CSV hash.
 2. Copy the small adapter, tokenizer and config into the new bundle's `source/`; original files are not overwritten. Base model weights are not copied.
-3. Load EOS with `is_trainable=False`, disable gradients on every parameter, and cache float32 train/validation logits in one eval/inference pass. No EOS backward pass or external training occurs.
-4. Compare restored validation predictions with the original `neural::*` probabilities. Stop on any changed argmax or a probability difference outside tolerance. `restore_audit.json` records the comparison. Investigate a failure rather than bypassing it.
+3. Load EOS with `is_trainable=False`, disable gradients on every parameter, and cache float32 train/validation logits in one model load. Train and validation have separate batch boundaries, using the source checkpoint's original batch size to reproduce its evaluation padding shapes. No EOS backward pass or external training occurs.
+4. Compare restored validation predictions with the original `neural::*` probabilities. Stop on any changed argmax or a probability difference outside tolerance. `restore_audit.json` records the comparison, original/restored BAcc, batch size and runtime versions. `restore_mismatches.csv` lists changed predictions and top-two probability margins. The parity threshold is not relaxed. Investigate a failure rather than bypassing it.
 5. Train a CPU MLP (25 versioned style features → 128 → GELU/dropout → 18) against `EOS_logits + style_logits`. Its last layer starts at zero, so initial combined logits exactly equal restored EOS logits. EOS logits are detached constants; only MLP parameters enter AdamW.
 6. Run 20 **small-MLP epochs**, not 20 Qwen epochs. Evaluate alpha `[0, 0.25, 0.5, 1]` each epoch. Retain a candidate only on strictly higher validation BAcc. Ties keep the earlier candidate; if nothing improves, epoch 0/alpha 0 keeps the baseline exactly.
 

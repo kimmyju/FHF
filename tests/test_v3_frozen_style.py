@@ -14,7 +14,7 @@ from fhf.v3_frozen_style import fit_residual, train_frozen, predict_frozen, make
 def config():
     return {'seed': 42, 'style_feature_version': 1, 'hidden_dim': 8, 'dropout': 0.,
             'epochs': 2, 'batch_size': 18, 'learning_rate': .01, 'weight_decay': 0.,
-            'alphas': [0., .5, 1.], 'inference_batch_size': 7}
+            'alphas': [0., .5, 1.]}
 
 
 def data(group):
@@ -93,14 +93,19 @@ def test_tiny_frozen_eos_end_to_end(tmp_path, monkeypatch):
         assert not self.training
         assert not torch.is_grad_enabled()
         assert all(not p.requires_grad and p.grad is None for p in self.parameters())
-        calls.append(1)
+        calls.append(kwargs['input_ids'].shape[0])
         return forward(self, *args, **kwargs)
     monkeypatch.setattr(PeftModelForSequenceClassification, 'forward', checked_forward)
     output = tmp_path / 'style'
     result = train_frozen(source, train, valid, config(), output, str(base))
-    assert calls
+    # Each dataset must start its own batches: concatenating would yield
+    # [7, 7, 7, 7, 7, 1] and alter the validation padding/batch composition.
+    assert calls == [7, 7, 4, 7, 7, 4]
     assert result['neural']['balanced_accuracy'] >= result['baseline']['balanced_accuracy']
-    assert json.loads((output / 'restore_audit.json').read_text())['argmax_mismatches'] == 0
+    audit = json.loads((output / 'restore_audit.json').read_text())
+    assert audit['argmax_mismatches'] == 0
+    assert audit['source_batch_size'] == 7
+    assert audit['validation_batches_separate'] is True
     assert hashlib.sha256(adapter.read_bytes()).hexdigest() == checksum
     expected = pd.read_csv(output / 'predictions.csv')[[f'neural::{n}' for n in MODEL_NAMES]].to_numpy()
     # Copied bundle must work even after original checkpoint directory moves.
