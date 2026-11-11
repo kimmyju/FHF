@@ -1,0 +1,13 @@
+{
+  "seed": 42,
+  "style_feature_version": 1,
+  "hidden_dim": 128,
+  "dropout": 0.1,
+  "epochs": 20,
+  "batch_size": 128,
+  "learning_rate": 0.001,
+  "weight_decay": 0.01,
+  "alphas": [0.0, 0.25, 0.5, 1.0],
+  "inference_batch_size": 2,
+  "wandb_project": "fhf-name-that-llm"
+}
