@@ -39,8 +39,8 @@ def test_head_tail_and_eos():
     assert report["truncated"] == 1
 
 
-@pytest.mark.parametrize("pooling", ["eos", "eos_mean", "eos_style"])
-def test_tiny_qwen_train_save_offline_infer(tmp_path, pooling):
+@pytest.mark.parametrize("pooling", ["eos", "eos_mean", "eos_style", "eos_selected"])
+def test_tiny_qwen_train_save_offline_infer(tmp_path, pooling, monkeypatch):
     import torch
     from tokenizers import Tokenizer
     from tokenizers.models import WordLevel
@@ -74,10 +74,45 @@ def test_tiny_qwen_train_save_offline_infer(tmp_path, pooling):
         assert initial.score.style[-1].weight.count_nonzero() == 0
         assert initial.score.style[-1].bias.count_nonzero() == 0
         del initial
+    selected_mode = pooling == "eos_selected"
+    if selected_mode:
+        cfg.update(pooling="eos", select_best_epoch=True, epochs=2,
+                   external_epochs=1, external_per_class=2,
+                   official_learning_rate=2e-4, official_head_learning_rate=1e-3)
+        # Force the earlier external checkpoint to win; verify inference loads
+        # its weights rather than the final official checkpoint.
+        from fhf import v3_decoder
+        real_metrics = v3_decoder.metrics
+        calls = []
+        def forced_metrics(y, probabilities):
+            result = real_metrics(y, probabilities)
+            calls.append(1)
+            result["balanced_accuracy"] = .99 if len(calls) == 1 else .1
+            return result
+        monkeypatch.setattr(v3_decoder, "metrics", forced_metrics)
     bundle = tmp_path / "bundle"
     checkpoint_root = tmp_path / "checkpoints"
-    summary = run(frame(), cfg, bundle, fold_only=0, checkpoint_root=checkpoint_root)
-    assert summary["evaluation"] == "single_fold_pilot"
+    if selected_mode:
+        full = frame()
+        external = frame(2).copy()
+        for key in ("id", "prompt_id", "text"):
+            external[key] = "external-" + external[key]
+        summary = run(full.iloc[:36], cfg, bundle, valid=full.iloc[36:], external=external,
+                      checkpoint_root=checkpoint_root)
+        assert summary["evaluation"] == "validation_selected_holdout"
+        saved = checkpoint_root / "fold-0"
+        selection = json.loads((saved / "selection.json").read_text())
+        assert selection["stage"] == "external" and selection["epoch"] == 1
+        assert (saved / "adapter/adapter_model.safetensors").read_bytes() == (saved / selection["adapter_path"] / "adapter_model.safetensors").read_bytes()
+        assert (saved / "epochs/official-2/adapter/adapter_model.safetensors").read_bytes() != (saved / "adapter/adapter_model.safetensors").read_bytes()
+        history = json.loads((saved / "history.json").read_text())
+        assert history[0]["initial_adapter_lr"] == 1e-3
+        assert history[1]["initial_adapter_lr"] == 2e-4
+        assert history[1]["initial_head_lr"] == 1e-3
+        assert all("val_balanced_accuracy" in entry for entry in history)
+    else:
+        summary = run(frame(), cfg, bundle, fold_only=0, checkpoint_root=checkpoint_root)
+        assert summary["evaluation"] == "single_fold_pilot"
     predictions = pd.read_csv(bundle / "predictions.csv", dtype={"id": str})
     source = frame().set_index("id").loc[predictions.id].reset_index()
     from peft import PeftModel
@@ -102,7 +137,7 @@ def test_tiny_qwen_train_save_offline_infer(tmp_path, pooling):
     assert list(submitted.columns) == ["id", "model"]
     assert (checkpoint_root / "fold-0" / "adapter" / "adapter_model.safetensors").exists()
     with pytest.raises(ValueError, match="Output exists"):
-        run(frame(), cfg, bundle)
+        run(frame(), {**cfg, "select_best_epoch": False}, bundle)
     manifest = json.loads((bundle / "manifest.json").read_text())
     assert manifest["labels"] == MODEL_NAMES
 
@@ -160,3 +195,9 @@ def test_style_features_and_zero_residual():
     assert head.style[-1].weight.grad.abs().sum() > 0
     opt.step()
     assert not torch.equal(head(eos, features), head.eos(eos))
+
+
+def test_epoch_selection_rejects_outer_cv(tmp_path):
+    with pytest.raises(ValueError, match="requires explicit --valid"):
+        run(frame(), {"select_best_epoch": True}, tmp_path / "invalid")
+    assert not (tmp_path / "invalid").exists()

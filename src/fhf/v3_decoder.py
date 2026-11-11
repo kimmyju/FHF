@@ -11,6 +11,7 @@ import json
 import math
 import os
 import random
+import shutil
 import time
 from pathlib import Path
 
@@ -205,7 +206,7 @@ def predict_neural(model, rows, tokenizer, batch_size):
     return np.concatenate(parts)
 
 
-def train_stage(model, rows, labels, tokenizer, cfg, epochs, tracker=None, stage="official"):
+def train_stage(model, rows, labels, tokenizer, cfg, epochs, tracker=None, stage="official", on_epoch_end=None):
     import torch
     from transformers import get_cosine_schedule_with_warmup
     batch_size, accumulation = int(cfg["batch_size"]), int(cfg["accumulation"])
@@ -222,9 +223,13 @@ def train_stage(model, rows, labels, tokenizer, cfg, epochs, tracker=None, stage
     for name, param in model.named_parameters():
         if param.requires_grad:
             (head if "modules_to_save" in name else adapter).append(param)
+    adapter_lr = float(cfg.get(f"{stage}_learning_rate", cfg["learning_rate"]))
+    head_lr = float(cfg.get(f"{stage}_head_learning_rate", cfg["head_learning_rate"]))
+    if not math.isfinite(adapter_lr) or not math.isfinite(head_lr) or min(adapter_lr, head_lr) <= 0:
+        raise ValueError("Stage learning rates must be finite and positive")
     optimizer = torch.optim.AdamW([
-        {"params": adapter, "lr": float(cfg["learning_rate"])},
-        {"params": head, "lr": float(cfg["head_learning_rate"])}], weight_decay=float(cfg["weight_decay"]))
+        {"params": adapter, "lr": adapter_lr},
+        {"params": head, "lr": head_lr}], weight_decay=float(cfg["weight_decay"]))
     steps = math.ceil(len(rows) / (batch_size * accumulation)) * epochs
     scheduler = get_cosine_schedule_with_warmup(optimizer, int(steps * cfg["warmup_ratio"]), steps)
     history = []
@@ -250,7 +255,10 @@ def train_stage(model, rows, labels, tokenizer, cfg, epochs, tracker=None, stage
             optimizer.step()
             scheduler.step()
         record = {"stage": stage, "epoch": epoch + 1, "loss": loss_total / len(rows),
-                  "train_accuracy": correct / len(rows)}
+                  "train_accuracy": correct / len(rows),
+                  "initial_adapter_lr": adapter_lr, "initial_head_lr": head_lr}
+        if on_epoch_end is not None:
+            record.update(on_epoch_end(stage, epoch + 1))
         history.append(record)
         print(json.dumps(record), flush=True)
         if tracker:
@@ -300,16 +308,51 @@ def fit_fold(train, valid, cfg, out, external=None):
         tracker = wandb.init(project=cfg["wandb_project"], name=out.name, config=cfg, reinit=True,
                              tags=["fingerprint-v3", "decoder", "flat-ce", cfg.get("pooling", "eos")])
     history = []
+    select_best = bool(cfg.get("select_best_epoch", False))
+    epoch_reports, best = [], {}
+    best_probs = None
+    final_probs = None
+
+    def evaluate_epoch(stage, epoch):
+        nonlocal best_probs, final_probs
+        probabilities = predict_neural(model, va, tokenizer, int(cfg["batch_size"]))
+        report = metrics(valid.model.map(MODEL_TO_ID).to_numpy(), probabilities)
+        folder = out / "epochs" / f"{stage}-{epoch}"
+        model.save_pretrained(folder / "adapter")
+        np.save(folder / "validation_probabilities.npy", probabilities)
+        # External epochs are diagnostic; only the last external checkpoint and
+        # official epochs compete. No selection interrupts the training schedule.
+        eligible = stage == "official" or (stage == "external" and epoch == int(cfg["external_epochs"]))
+        record = {"stage": stage, "epoch": epoch, "eligible": eligible, **report}
+        epoch_reports.append(record)
+        dump(out / "epoch_metrics.json", epoch_reports)
+        if eligible and (not best or report["balanced_accuracy"] > best["balanced_accuracy"]):
+            best.update(stage=stage, epoch=epoch, balanced_accuracy=report["balanced_accuracy"],
+                        adapter_path=str(folder.relative_to(out) / "adapter"))
+            best_probs = probabilities.copy()
+            dump(out / "selection.json", best)
+        final_probs = probabilities
+        return {"val_balanced_accuracy": report["balanced_accuracy"],
+                "val_family_accuracy": report["family_accuracy"],
+                "val_within_family_given_correct": report["within_family_given_correct"]}
+
     try:
         if external is not None:
             ex, ex_audit = encode(external.text, tokenizer, int(cfg["max_length"]), cfg)
             dump(out / "external_tokenization.json", ex_audit)
             history += train_stage(model, ex, external.model.map(MODEL_TO_ID), tokenizer, cfg,
-                                   int(cfg["external_epochs"]), tracker, "external")
+                                   int(cfg["external_epochs"]), tracker, "external",
+                                   evaluate_epoch if select_best else None)
         history += train_stage(model, tr, train.model.map(MODEL_TO_ID), tokenizer, cfg,
-                               int(cfg["epochs"]), tracker)
-        model.save_pretrained(out / "adapter")
-        neural = predict_neural(model, va, tokenizer, int(cfg["batch_size"]))
+                               int(cfg["epochs"]), tracker, "official",
+                               evaluate_epoch if select_best else None)
+        if select_best:
+            shutil.copytree(out / best["adapter_path"], out / "adapter")
+            neural = best_probs
+            dump(out / "final_epoch_metrics.json", metrics(valid.model.map(MODEL_TO_ID).to_numpy(), final_probs))
+        else:
+            model.save_pretrained(out / "adapter")
+            neural = predict_neural(model, va, tokenizer, int(cfg["batch_size"]))
         lexical = lexical_fit(train)
         joblib.dump(lexical, out / "lexical.joblib")
         lex = lexical_predict(lexical, valid.text)
@@ -327,6 +370,8 @@ def fit_fold(train, valid, cfg, out, external=None):
 
 def run(train, cfg, output, valid=None, external=None, fold_only=None, checkpoint_root=None):
     train = validate(train)
+    if cfg.get("select_best_epoch") and valid is None:
+        raise ValueError("select_best_epoch requires explicit --valid; outer CV folds cannot select epochs")
     out = Path(output)
     if out.exists():
         raise ValueError("Output exists; use a new path to prevent stale-fold mixing")
@@ -379,6 +424,10 @@ def run(train, cfg, output, valid=None, external=None, fold_only=None, checkpoin
     summary = {key: metrics(y, oof[[f"{key}::{c}" for c in MODEL_NAMES]].to_numpy())
                for key in ("neural", "lexical", "blend")}
     summary["evaluation"] = "frozen_holdout" if valid is not None else ("single_fold_pilot" if fold_only is not None else "grouped_oof")
+    if cfg.get("select_best_epoch"):
+        summary["evaluation"] = "validation_selected_holdout"
+        summary["selection"] = json.loads((checkpoint_root / "fold-0" / "selection.json").read_text())
+        summary["final_epoch_neural"] = json.loads((checkpoint_root / "fold-0" / "final_epoch_metrics.json").read_text())
     summary["rows"] = len(oof)
     summary["external_used"] = external is not None
     summary["data_sha256"] = hashlib.sha256(target.to_csv(index=False).encode()).hexdigest()
