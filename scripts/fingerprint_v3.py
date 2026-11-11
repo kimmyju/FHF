@@ -15,6 +15,7 @@ def main():
     fit.add_argument("--config", default="configs/fingerprint_v3/qwen3_4b.json")
     fit.add_argument("--train", default=str(root / "csv/train.csv"))
     fit.add_argument("--valid", help="Frozen holdout CSV; otherwise grouped CV")
+    fit.add_argument("--resume-external-from", help="Completed holdout results bundle; restart official stage from its last external checkpoint")
     fit.add_argument("--external", help="Already audited joined CSV with exact labels")
     fit.add_argument("--out", default="qwen4b-holdout", help="Run name under NAS results/, or absolute result directory")
     fit.add_argument("--checkpoint-dir", help="Default: NAS checkpoints/<run-name>")
@@ -41,6 +42,8 @@ def main():
     for key in ("batch_size", "accumulation", "epochs", "model"):
         if getattr(args, key) is not None:
             cfg[key] = getattr(args, key)
+    if args.resume_external_from:
+        cfg["resume_external_from"] = args.resume_external_from
     cfg["wandb"] = args.wandb or cfg.get("wandb", False)
     read = lambda path: pd.read_csv(path, dtype={"id": str, "prompt_id": str}) if path else None
     for key, folder in {"HF_HOME": "huggingface", "TORCH_HOME": "torch",

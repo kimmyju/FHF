@@ -136,6 +136,42 @@ def test_tiny_qwen_train_save_offline_infer(tmp_path, pooling, monkeypatch):
     assert submitted.id.tolist() == source.id.tolist()
     assert list(submitted.columns) == ["id", "model"]
     assert (checkpoint_root / "fold-0" / "adapter" / "adapter_model.safetensors").exists()
+    if selected_mode:
+        monkeypatch.setattr(v3_decoder, "metrics", real_metrics)
+        import hashlib
+        old_files = {str(p.relative_to(checkpoint_root)): hashlib.sha256(p.read_bytes()).hexdigest()
+                     for p in checkpoint_root.rglob("*") if p.is_file()}
+        stages = []
+        original_train_stage = v3_decoder.train_stage
+        def tracked_stage(*args, **kwargs):
+            stages.append(args[7] if len(args) > 7 else kwargs.get("stage", "official"))
+            return original_train_stage(*args, **kwargs)
+        monkeypatch.setattr(v3_decoder, "train_stage", tracked_stage)
+        resumed_cfg = {**cfg, "resume_external_from": str(bundle), "official_learning_rate": 1e-3}
+        resumed = tmp_path / "resumed"
+        result = run(full.iloc[:36], resumed_cfg, resumed, valid=full.iloc[36:])
+        assert stages == ["official"]
+        audit = json.loads((resumed / "fold-0/resume_audit.json").read_text())
+        assert audit["argmax_mismatches"] == 0
+        assert audit["source_adapter"].endswith("epochs/external-1/adapter")
+        assert result["external_used"] is True
+        resumed_history = json.loads((resumed / "fold-0/history.json").read_text())
+        assert resumed_history[0]["stage"] == "restored_external"
+        assert resumed_history[1]["initial_adapter_lr"] == 1e-3
+        assert {str(p.relative_to(checkpoint_root)): hashlib.sha256(p.read_bytes()).hexdigest()
+                for p in checkpoint_root.rglob("*") if p.is_file()} == old_files
+        # New output is independently usable after moving the source checkpoints.
+        checkpoint_root.rename(tmp_path / "original-checkpoints-moved")
+        submission = tmp_path / "resumed.parquet"
+        infer(resumed, full.iloc[36:], str(base), submission, batch_size=7)
+        predicted = pd.read_csv(resumed / "predictions.csv")
+        assert pd.read_parquet(submission).model.tolist() == np.asarray(MODEL_NAMES)[
+            predicted[[f"blend::{n}" for n in MODEL_NAMES]].to_numpy().argmax(1)].tolist()
+        (tmp_path / "original-checkpoints-moved").rename(checkpoint_root)
+        with pytest.raises(ValueError, match="Do not supply --external"):
+            run(full.iloc[:36], resumed_cfg, tmp_path / "bad", valid=full.iloc[36:], external=external)
+        with pytest.raises(ValueError, match="Validation CSV differs"):
+            run(full.iloc[:36], resumed_cfg, tmp_path / "bad", valid=full.iloc[36:].iloc[::-1])
     with pytest.raises(ValueError, match="Output exists"):
         run(frame(), {**cfg, "select_best_epoch": False}, bundle)
     manifest = json.loads((bundle / "manifest.json").read_text())

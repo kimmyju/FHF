@@ -266,9 +266,41 @@ def train_stage(model, rows, labels, tokenizer, cfg, epochs, tracker=None, stage
     return history
 
 
+def prepare_external_resume(source, train, valid, cfg):
+    """Read a completed holdout run; restore its LAST external epoch, never best adapter."""
+    if valid is None:
+        raise ValueError("External resume requires explicit --valid")
+    source = Path(source).resolve()
+    manifest = json.loads((source / "manifest.json").read_text())
+    if manifest["labels"] != MODEL_NAMES or len(manifest["folds"]) != 1 or manifest["evaluation"] not in ("frozen_holdout", "validation_selected_holdout"):
+        raise ValueError("Resume source must be a single holdout run")
+    fold = (source / manifest["folds"][0]).resolve()
+    previous = json.loads((fold / "config.json").read_text())
+    if previous.get("pooling", "eos") != "eos":
+        raise ValueError("External resume currently requires original EOS pooling")
+    stage = fold / "epochs" / f"external-{int(previous['external_epochs'])}"
+    if not (stage / "adapter/adapter_model.safetensors").is_file() or not (stage / "validation_probabilities.npy").is_file():
+        raise ValueError("Missing last external epoch adapter/probabilities in source")
+    summary = json.loads((source / "metrics.json").read_text())
+    if hashlib.sha256(valid.to_csv(index=False).encode()).hexdigest() != summary["data_sha256"]:
+        raise ValueError("Validation CSV differs from source")
+    cols = ["id", "prompt_id", "model"]
+    saved = pd.read_csv(fold / "training_ids.csv", dtype=str)[cols].sort_values("id").reset_index(drop=True)
+    current = train[cols].astype(str).sort_values("id").reset_index(drop=True)
+    if not saved.equals(current):
+        raise ValueError("Training split differs from source")
+    # Architecture, base revision, tokenization, and batching come from source.
+    # This is a new official optimization stage, not an optimizer-state resume.
+    overrides = {key: cfg[key] for key in ("official_learning_rate", "official_head_learning_rate",
+        "epochs", "seed", "select_best_epoch", "wandb", "wandb_project") if key in cfg}
+    merged = {**previous, **overrides, "resume_external_from": str(source),
+              "resume_external_fold": str(fold), "resume_external_adapter": str(stage / "adapter")}
+    return merged
+
+
 def fit_fold(train, valid, cfg, out, external=None):
     import torch
-    from peft import LoraConfig, get_peft_model
+    from peft import LoraConfig, get_peft_model, PeftModel
     from transformers import AutoTokenizer, set_seed
     out = Path(out)
     if out.exists():
@@ -277,7 +309,11 @@ def fit_fold(train, valid, cfg, out, external=None):
     seed = int(cfg["seed"])
     set_seed(seed)
     random.seed(seed)
-    tokenizer = AutoTokenizer.from_pretrained(cfg["model"], revision=cfg.get("revision", "main"))
+    resume = cfg.get("resume_external_adapter")
+    if resume:
+        tokenizer = AutoTokenizer.from_pretrained(Path(cfg["resume_external_fold"]) / "tokenizer", local_files_only=True)
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(cfg["model"], revision=cfg.get("revision", "main"))
     if tokenizer.eos_token_id is None:
         raise ValueError("Tokenizer requires EOS")
     # EOS must remain a real token for last-token pooling. Qwen has a distinct pad.
@@ -292,11 +328,14 @@ def fit_fold(train, valid, cfg, out, external=None):
     resolved_revision = getattr(model.config, "_commit_hash", None)
     cfg = {**cfg, "revision": resolved_revision or cfg.get("revision", "main")}
     dump(out / "config.json", cfg)
-    model = get_peft_model(model, LoraConfig(
-        task_type="SEQ_CLS", r=int(cfg["lora_rank"]), lora_alpha=int(cfg["lora_alpha"]),
-        lora_dropout=float(cfg["lora_dropout"]), bias="none",
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
-        modules_to_save=["score"]))
+    if resume:
+        model = PeftModel.from_pretrained(model, resume, is_trainable=True, local_files_only=True)
+    else:
+        model = get_peft_model(model, LoraConfig(
+            task_type="SEQ_CLS", r=int(cfg["lora_rank"]), lora_alpha=int(cfg["lora_alpha"]),
+            lora_dropout=float(cfg["lora_dropout"]), bias="none",
+            target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+            modules_to_save=["score"]))
     if cfg["gradient_checkpointing"]:
         model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
         model.enable_input_require_grads()
@@ -317,6 +356,19 @@ def fit_fold(train, valid, cfg, out, external=None):
         nonlocal best_probs, final_probs
         probabilities = predict_neural(model, va, tokenizer, int(cfg["batch_size"]))
         report = metrics(valid.model.map(MODEL_TO_ID).to_numpy(), probabilities)
+        if resume and stage == "external":
+            expected = np.load(Path(resume).parent / "validation_probabilities.npy")
+            if expected.shape != probabilities.shape:
+                raise ValueError("External checkpoint prediction shape mismatch")
+            audit = {"argmax_mismatches": int((expected.argmax(1) != probabilities.argmax(1)).sum()),
+                     "max_probability_difference": float(np.abs(expected - probabilities).max()),
+                     "original_bacc": metrics(valid.model.map(MODEL_TO_ID).to_numpy(), expected)["balanced_accuracy"],
+                     "restored_bacc": report["balanced_accuracy"], "source_adapter": resume,
+                     "adapter_sha256": hashlib.sha256((Path(resume) / "adapter_model.safetensors").read_bytes()).hexdigest(),
+                     "rng_note": "Seed reset; source run did not save RNG state at external boundary."}
+            dump(out / "resume_audit.json", audit)
+            if audit["argmax_mismatches"] or not np.allclose(expected, probabilities, atol=2e-3, rtol=2e-3):
+                raise ValueError("Restored external predictions differ; inspect resume_audit.json")
         folder = out / "epochs" / f"{stage}-{epoch}"
         model.save_pretrained(folder / "adapter")
         np.save(folder / "validation_probabilities.npy", probabilities)
@@ -337,6 +389,14 @@ def fit_fold(train, valid, cfg, out, external=None):
                 "val_within_family_given_correct": report["within_family_given_correct"]}
 
     try:
+        if resume:
+            if not select_best:
+                raise ValueError("External resume requires select_best_epoch")
+            initial = evaluate_epoch("external", int(cfg["external_epochs"]))
+            history.append({"stage": "restored_external", "epoch": int(cfg["external_epochs"]), **initial})
+            # Seed is reset because old checkpoints lack RNG state. Documented,
+            # reproducible new stage; not bitwise continuation of the old run.
+            set_seed(seed)
         if external is not None:
             ex, ex_audit = encode(external.text, tokenizer, int(cfg["max_length"]), cfg)
             dump(out / "external_tokenization.json", ex_audit)
@@ -372,10 +432,19 @@ def run(train, cfg, output, valid=None, external=None, fold_only=None, checkpoin
     train = validate(train)
     if cfg.get("select_best_epoch") and valid is None:
         raise ValueError("select_best_epoch requires explicit --valid; outer CV folds cannot select epochs")
+    if cfg.get("resume_external_from"):
+        if external is not None:
+            raise ValueError("Do not supply --external when resuming external checkpoint")
+        checked_valid = validate(valid) if valid is not None else None
+        cfg = prepare_external_resume(cfg["resume_external_from"], train, checked_valid, cfg)
     out = Path(output)
     if out.exists():
         raise ValueError("Output exists; use a new path to prevent stale-fold mixing")
     checkpoint_root = Path(checkpoint_root) if checkpoint_root is not None else out
+    if cfg.get("resume_external_from"):
+        protected = [Path(cfg["resume_external_from"]).resolve(), Path(cfg["resume_external_fold"]).resolve()]
+        if any(p.resolve().is_relative_to(old) for p in (out, checkpoint_root) for old in protected):
+            raise ValueError("Resume outputs must be outside source results/checkpoint directories")
     if checkpoint_root != out and checkpoint_root.exists():
         raise ValueError("Checkpoint directory exists; choose a fresh run name")
     if not 0 <= float(cfg["lexical_weight"]) <= 1:
@@ -429,7 +498,7 @@ def run(train, cfg, output, valid=None, external=None, fold_only=None, checkpoin
         summary["selection"] = json.loads((checkpoint_root / "fold-0" / "selection.json").read_text())
         summary["final_epoch_neural"] = json.loads((checkpoint_root / "fold-0" / "final_epoch_metrics.json").read_text())
     summary["rows"] = len(oof)
-    summary["external_used"] = external is not None
+    summary["external_used"] = external is not None or bool(cfg.get("resume_external_from"))
     summary["data_sha256"] = hashlib.sha256(target.to_csv(index=False).encode()).hexdigest()
     dump(out / "metrics.json", summary)
     dump(out / "manifest.json", {"folds": fold_names, "labels": MODEL_NAMES,
